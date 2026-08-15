@@ -12,14 +12,14 @@ export type PluginValidatorRule = {
   run: (contract: IRContract) => Diagnostic[];
 };
 
-export interface SolidScriptPlugin {
+export interface ScriipturePlugin {
   name: string;
   optimizerPasses?: PluginOptimizerPass[];
   validatorRules?: PluginValidatorRule[];
 }
 
 export interface PluginRegistry {
-  plugins: SolidScriptPlugin[];
+  plugins: ScriipturePlugin[];
 }
 
 let _registry: PluginRegistry = { plugins: [] };

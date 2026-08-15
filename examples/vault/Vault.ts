@@ -1,4 +1,4 @@
-import { Address, storage, view, onlyOwner, nonReentrant, payable, msg } from "solidscript";
+import { Address, storage, view, onlyOwner, nonReentrant, payable, msg } from "scriipture";
 
 export class Vault {
   @storage deposits: Map<Address, bigint> = new Map();

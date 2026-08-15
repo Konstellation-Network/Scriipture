@@ -1,4 +1,4 @@
-import { storage, onlyOwner } from "solidscript";
+import { storage, onlyOwner } from "scriipture";
 
 export class HasTodo {
   @storage value: bigint = 0n;

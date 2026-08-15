@@ -19,7 +19,7 @@ export async function verifySourceCommand(contractName: string, opts: VerifySour
     console.error("");
     console.error("Set one (one-time, ~30 seconds):");
     console.error(pc.cyan("  1. Get a free key at https://etherscan.io/myapikey"));
-    console.error(pc.cyan("  2. solidscript config set etherscan-key YOUR_KEY"));
+    console.error(pc.cyan("  2. scriipture config set etherscan-key YOUR_KEY"));
     console.error("");
     console.error(pc.dim("The same key works for every chain Etherscan covers (Base, Arbitrum, Optimism, Polygon, etc.)"));
     console.error(pc.dim("Alternatives: --api-key flag, or ETHERSCAN_API_KEY env var."));

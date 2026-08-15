@@ -1,4 +1,4 @@
-import { Address, msg } from "solidscript";
+import { Address, msg } from "scriipture";
 import { Test } from "forge-std";
 import { MyToken } from "../../examples/erc20-token/MyToken";
 

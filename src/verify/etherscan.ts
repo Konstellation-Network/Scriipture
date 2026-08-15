@@ -30,7 +30,7 @@ export async function verifyOnEtherscan(input: VerifyInput): Promise<VerifyOutco
   const artifactsDir = input.artifactsDir ?? path.resolve("out/artifacts");
   const standardJsonPath = path.join(artifactsDir, "solc-input.json");
   if (!fs.existsSync(standardJsonPath)) {
-    return { ok: false, message: `solc-input.json not found at ${standardJsonPath}; run 'solidscript compile' first` };
+    return { ok: false, message: `solc-input.json not found at ${standardJsonPath}; run 'scriipture compile' first` };
   }
   const standardJson = fs.readFileSync(standardJsonPath, "utf8");
 

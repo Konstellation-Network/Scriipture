@@ -3,10 +3,10 @@ import path from "node:path";
 import { ConfigSchema, type Config } from "./schema";
 
 const CONFIG_NAMES = [
-  "solidscript.config.mjs",
-  "solidscript.config.js",
-  "solidscript.config.ts",
-  "solidscript.config.json",
+  "scriipture.config.mjs",
+  "scriipture.config.js",
+  "scriipture.config.ts",
+  "scriipture.config.json",
 ];
 
 export async function loadConfig(cwd: string = process.cwd()): Promise<Config> {

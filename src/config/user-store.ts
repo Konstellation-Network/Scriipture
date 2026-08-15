@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-export const USER_CONFIG_DIR = path.join(os.homedir(), ".solidscript");
+export const USER_CONFIG_DIR = path.join(os.homedir(), ".scriipture");
 export const USER_CONFIG_FILE = path.join(USER_CONFIG_DIR, "config.json");
 
 const KNOWN_KEYS = [

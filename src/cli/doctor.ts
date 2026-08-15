@@ -21,13 +21,13 @@ const CHECKS: Check[] = [
     probe: () => probeCmd("bun", "--version", "`curl -fsSL https://bun.sh/install | bash`  (optional, dev only)"),
   },
   {
-    name: "@openzeppelin/contracts (bundled with solidscript)",
+    name: "@openzeppelin/contracts (bundled with scriipture)",
     required: true,
     probe: () => {
       const { resolveOZRoot } = require("../compiler/solc");
       const root = resolveOZRoot?.();
       if (!root) {
-        return { ok: false, hint: "reinstall solidscript: `npm install solidscript`" };
+        return { ok: false, hint: "reinstall scriipture: `npm install scriipture`" };
       }
       try {
         const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -40,7 +40,7 @@ const CHECKS: Check[] = [
   {
     name: "solc (native, for Slither)",
     required: false,
-    probe: () => probeCmd("solc", "--version", "`brew install solidity`  (only needed if you use `solidscript audit`)"),
+    probe: () => probeCmd("solc", "--version", "`brew install solidity`  (only needed if you use `scriipture audit`)"),
   },
   {
     name: "slither (Docker or native)",
@@ -49,7 +49,7 @@ const CHECKS: Check[] = [
       const { toolStatus } = require("../runtime/tool-paths");
       const s = toolStatus("slither");
       if (s.ok) return { ok: true, version: s.via };
-      return { ok: false, hint: s.hint ?? "install Docker (`solidscript doctor --fix` pulls the image)" };
+      return { ok: false, hint: s.hint ?? "install Docker (`scriipture doctor --fix` pulls the image)" };
     },
   },
   {
@@ -59,7 +59,7 @@ const CHECKS: Check[] = [
       const { toolStatus } = require("../runtime/tool-paths");
       const s = toolStatus("myth");
       if (s.ok) return { ok: true, version: s.via };
-      return { ok: false, hint: s.hint ?? "install Docker (`solidscript doctor --fix` pulls the image)" };
+      return { ok: false, hint: s.hint ?? "install Docker (`scriipture doctor --fix` pulls the image)" };
     },
   },
   {
@@ -69,7 +69,7 @@ const CHECKS: Check[] = [
       const { toolStatus } = require("../runtime/tool-paths");
       const s = toolStatus("forge");
       if (s.ok) return { ok: true, version: s.via };
-      return { ok: false, hint: "auto-downloaded on first `verify`/`test`, or run `solidscript doctor --fix`" };
+      return { ok: false, hint: "auto-downloaded on first `verify`/`test`, or run `scriipture doctor --fix`" };
     },
   },
   {
@@ -90,7 +90,7 @@ export interface DoctorOptions {
 
 export async function doctorCommand(opts: DoctorOptions = {}): Promise<void> {
   if (opts.fix) {
-    console.log(pc.bold("solidscript doctor --fix — installing missing tools"));
+    console.log(pc.bold("scriipture doctor --fix — installing missing tools"));
     console.log("");
     const { prefetchAll } = await import("../runtime/tool-paths");
     const r = await prefetchAll();
@@ -98,14 +98,14 @@ export async function doctorCommand(opts: DoctorOptions = {}): Promise<void> {
     for (const f of r.failed) console.log(`  ${pc.yellow("○")} ${f.tool}: ${pc.dim(f.error)}`);
     console.log("");
     if (r.failed.length === 0) {
-      console.log(pc.green("✓ all tools ready — solidscript is self-contained"));
+      console.log(pc.green("✓ all tools ready — scriipture is self-contained"));
     } else {
       console.log(pc.yellow(`✓ ${r.ok.length} ready, ${r.failed.length} need extra setup (see hints above)`));
     }
     return;
   }
 
-  console.log(pc.bold("solidscript doctor — environment check"));
+  console.log(pc.bold("scriipture doctor — environment check"));
   console.log("");
   let missingRequired = 0;
   for (const c of CHECKS) {

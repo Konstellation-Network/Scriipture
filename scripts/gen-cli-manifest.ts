@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Generate docs/cli-commands.yaml — a machine-readable manifest of every
- * solidscript subcommand, flag, and argument.
+ * scriipture subcommand, flag, and argument.
  *
  * Uses Commander's reflection API to walk the registered command tree
  * and emit a YAML doc for downstream tooling (LSPs, codegen, etc.).
@@ -28,24 +28,24 @@ interface CommandEntry {
 }
 
 const EXAMPLES: Record<string, string[]> = {
-  init: ["solidscript init my-app", "solidscript init ."],
-  build: ["solidscript build contracts", "solidscript build contracts --no-optimize"],
-  validate: ["solidscript validate contracts", "solidscript validate contracts --secure"],
-  compile: ["solidscript compile out/sol"],
+  init: ["scriipture init my-app", "scriipture init ."],
+  build: ["scriipture build contracts", "scriipture build contracts --no-optimize"],
+  validate: ["scriipture validate contracts", "scriipture validate contracts --secure"],
+  compile: ["scriipture compile out/sol"],
   deploy: [
-    "solidscript deploy Counter -n anvil",
-    "solidscript deploy MyToken -n base-sepolia -a 1000000",
-    "solidscript deploy MyToken -n base --no-verify --wallet prod",
+    "scriipture deploy Counter -n anvil",
+    "scriipture deploy MyToken -n base-sepolia -a 1000000",
+    "scriipture deploy MyToken -n base --no-verify --wallet prod",
   ],
-  verify: ["solidscript verify contracts", "solidscript verify contracts --skip fuzz,invariants"],
-  "verify-source": ["solidscript verify-source MyToken -n base-sepolia"],
-  "secure-deploy": ["solidscript secure-deploy contracts -c Counter -n base-sepolia"],
-  audit: ["solidscript audit contracts"],
-  "audit-pack": ["solidscript audit-pack contracts"],
-  gasdiff: ["solidscript gasdiff contracts"],
-  test: ["solidscript test", "solidscript test -p testFuzz"],
-  trace: ["forge test 2>&1 | solidscript trace"],
-  doctor: ["solidscript doctor"],
+  verify: ["scriipture verify contracts", "scriipture verify contracts --skip fuzz,invariants"],
+  "verify-source": ["scriipture verify-source MyToken -n base-sepolia"],
+  "secure-deploy": ["scriipture secure-deploy contracts -c Counter -n base-sepolia"],
+  audit: ["scriipture audit contracts"],
+  "audit-pack": ["scriipture audit-pack contracts"],
+  gasdiff: ["scriipture gasdiff contracts"],
+  test: ["scriipture test", "scriipture test -p testFuzz"],
+  trace: ["forge test 2>&1 | scriipture trace"],
+  doctor: ["scriipture doctor"],
 };
 
 const commands: CommandEntry[] = [];

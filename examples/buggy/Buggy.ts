@@ -1,4 +1,4 @@
-import { Address, storage, msg } from "solidscript";
+import { Address, storage, msg } from "scriipture";
 
 export class Buggy {
   @storage owner!: Address;

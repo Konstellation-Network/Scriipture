@@ -1,4 +1,4 @@
-import { Address, storage, view, onlyOwner, payable, msg } from "solidscript";
+import { Address, storage, view, onlyOwner, payable, msg } from "scriipture";
 
 export class Staking {
   @storage stakes: Map<Address, bigint> = new Map();

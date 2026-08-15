@@ -1,4 +1,4 @@
-# SolidScript — Landing page content
+# Scriipture — Landing page content
 
 > This file is structured content for the marketing site, not a doc.
 > Each `##` section is intended as a separate page block. Code blocks are copy-paste-ready.
@@ -9,11 +9,11 @@
 
 **Write smart contracts in TypeScript. Ship audited Solidity.**
 
-Multi-chain deploy + 9-gate security pipeline + browser-wallet signing — all from `npm install solidscript`.
+Multi-chain deploy + 9-gate security pipeline + browser-wallet signing — all from `npm install scriipture`.
 
 ```ts
-import { Address, onlyOwner, msg } from "solidscript";
-import { ERC20 } from "solidscript/standards";
+import { Address, onlyOwner, msg } from "scriipture";
+import { ERC20 } from "scriipture/standards";
 
 export class MyToken extends ERC20 {
   constructor(supply: bigint) {
@@ -29,7 +29,7 @@ export class MyToken extends ERC20 {
 ```
 
 **Primary CTA:** `Get started` → `/docs`
-**Secondary CTA:** `View on GitHub` → `https://github.com/usezoracle/SolidScript`
+**Secondary CTA:** `View on GitHub` → `https://github.com/usezoracle/Scriipture`
 
 ---
 
@@ -39,23 +39,23 @@ Two commands. From empty directory to verified contract on Base Sepolia.
 
 ```bash
 # 1. Install
-npm install solidscript
+npm install scriipture
 
 # 2. Auto-fetch the toolchain (forge, anvil, slither, mythril — all of it)
-npx solidscript doctor --fix
+npx scriipture doctor --fix
 
 # 3. Scaffold a project
-npx solidscript init my-token && cd my-token
+npx scriipture init my-token && cd my-token
 
 # 4. Deploy via your browser wallet — no private keys on disk
-npx solidscript deploy Counter -n base-sepolia
+npx scriipture deploy Counter -n base-sepolia
 ```
 
 A browser tab opens. MetaMask pops up. You sign. The contract is live + auto-verified on BaseScan.
 
 ---
 
-## Why SolidScript
+## Why Scriipture
 
 **Zero Solidity required.** Write in TypeScript with the types you already know. The transpiler emits readable, auditable Solidity — not bytecode.
 
@@ -67,18 +67,18 @@ A browser tab opens. MetaMask pops up. You sign. The contract is live + auto-ver
 
 **Auto-verify on every chain Etherscan supports.** One API key for Base, Optimism, Arbitrum, Polygon, ZkSync, Ethereum mainnet, and every testnet.
 
-**Source maps back to your TypeScript.** When forge throws a stack trace, `solidscript trace` rewrites every `.sol:line` to the originating `.ts:line`.
+**Source maps back to your TypeScript.** When forge throws a stack trace, `scriipture trace` rewrites every `.sol:line` to the originating `.ts:line`.
 
 ---
 
 ## What you write vs what ships
 
-Side-by-side. Your code on the left, the audited Solidity SolidScript generates on the right.
+Side-by-side. Your code on the left, the audited Solidity Scriipture generates on the right.
 
 **TypeScript (yours):**
 
 ```ts
-import { storage, view, onlyOwner } from "solidscript";
+import { storage, view, onlyOwner } from "scriipture";
 
 export class Counter {
   @storage count: bigint = 0n;
@@ -124,7 +124,7 @@ contract Counter is Ownable {
 }
 ```
 
-**What SolidScript did automatically:**
+**What Scriipture did automatically:**
 - inferred `Ownable` base + injected `Ownable(msg.sender)` constructor call
 - rewrote `require("…")` → custom error (saves ~50 gas per revert + shrinks bytecode)
 - inferred `count` defaults to 0 + stripped the redundant initializer
@@ -133,7 +133,7 @@ contract Counter is Ownable {
 
 ## The 9-gate security pipeline
 
-Every `solidscript verify` runs in order. Any gate fails → deploy is blocked.
+Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 
 | Gate | Tool | What it catches |
 |---|---|---|
@@ -156,16 +156,16 @@ Deploy to any EVM chain. The CLI's `--chain`/`--network` flag does the rest.
 `anvil` · `base` · `base-sepolia` · `sepolia` · `mainnet` · `optimism` · `arbitrum` · `polygon` · `zksync` · `linea` · `scroll` · `+ any viem-supported chain`
 
 ```bash
-solidscript deploy MyToken -n base                # Base mainnet
-solidscript deploy MyToken -n optimism            # Optimism
-solidscript deploy MyToken -n base-sepolia        # Base testnet
+scriipture deploy MyToken -n base                # Base mainnet
+scriipture deploy MyToken -n optimism            # Optimism
+scriipture deploy MyToken -n base-sepolia        # Base testnet
 ```
 
 ---
 
-## SolidScript vs the alternatives
+## Scriipture vs the alternatives
 
-| | Raw Solidity | Hardhat | Foundry | **SolidScript** |
+| | Raw Solidity | Hardhat | Foundry | **Scriipture** |
 |---|---|---|---|---|
 | Learning curve | high | medium | medium-high | **none for TS devs** |
 | Static analysis | opt-in | plugin | bring your own | **gated by default** |
@@ -179,7 +179,7 @@ solidscript deploy MyToken -n base-sepolia        # Base testnet
 
 ## Library API (programmatic)
 
-Use SolidScript as a library, not just a CLI.
+Use Scriipture as a library, not just a CLI.
 
 ```ts
 import {
@@ -188,7 +188,7 @@ import {
   validateProgram,
   optimizeProgram,
   compileSolidity,
-} from "solidscript";
+} from "scriipture";
 
 const { program } = parseContractFiles(["./contracts/MyToken.ts"]);
 optimizeProgram(program);
@@ -203,7 +203,7 @@ console.log(solidity);
 - MIT licensed
 - 100% open source on GitHub
 - Built on OpenZeppelin v5, solc, Slither, Mythril, Foundry — every battle-tested tool in the EVM ecosystem
-- Reproducible builds: same TS source + same SolidScript version = byte-identical Solidity output
+- Reproducible builds: same TS source + same Scriipture version = byte-identical Solidity output
 - Zero telemetry, zero analytics, zero phone-home — the CLI runs entirely on your machine
 
 ---
@@ -213,17 +213,17 @@ console.log(solidity);
 **Ship safer contracts in TypeScript.**
 
 ```bash
-npm install solidscript
+npm install scriipture
 ```
 
-`Get started` → `/docs` · `Star on GitHub` → `https://github.com/usezoracle/SolidScript` · `Read the docs` → `/docs/details`
+`Get started` → `/docs` · `Star on GitHub` → `https://github.com/usezoracle/Scriipture` · `Read the docs` → `/docs/details`
 
 ---
 
 ## Footer
 
-- **GitHub** — github.com/usezoracle/SolidScript
-- **npm** — npmjs.com/package/solidscript
+- **GitHub** — github.com/usezoracle/Scriipture
+- **npm** — npmjs.com/package/scriipture
 - **Docs** — full reference in [docs/details.md](./docs/details.md)
 - **License** — MIT
 - **Contact** — labs@zoracle.xyz

@@ -1,4 +1,4 @@
-# SolidScript — full documentation
+# Scriipture — full documentation
 
 > **Write smart contracts in TypeScript. Ship audited Solidity.**
 > A transpiler + 9-gate security pipeline + multi-chain deployer, in one package.
@@ -9,9 +9,9 @@ This document is written for a TypeScript developer who has **never written Soli
 
 ## Table of contents
 
-1. [What is SolidScript and why does it exist](#1-what-is-solidscript-and-why-does-it-exist)
+1. [What is Scriipture and why does it exist](#1-what-is-scriipture-and-why-does-it-exist)
 2. [Install](#2-install)
-3. [`solidscript doctor` — confirm your environment](#3-solidscript-doctor)
+3. [`scriipture doctor` — confirm your environment](#3-scriipture-doctor)
 4. [Quickstart — token on Base Sepolia in 5 minutes](#4-quickstart)
 5. [Decorators reference](#5-decorators-reference)
 6. [Type mapping (TypeScript → Solidity)](#6-type-mapping)
@@ -22,17 +22,17 @@ This document is written for a TypeScript developer who has **never written Soli
 11. [Source verification on block explorers](#11-source-verification)
 12. [Plugins — extending the optimizer/validator](#12-plugins)
 13. [Troubleshooting](#13-troubleshooting)
-14. [SolidScript vs raw Solidity vs Hardhat vs Foundry](#14-comparison)
+14. [Scriipture vs raw Solidity vs Hardhat vs Foundry](#14-comparison)
 
 ---
 
-## 1. What is SolidScript and why does it exist
+## 1. What is Scriipture and why does it exist
 
-If you're a TypeScript developer, this is what writing a smart contract looks like in SolidScript:
+If you're a TypeScript developer, this is what writing a smart contract looks like in Scriipture:
 
 ```ts
-import { Address, storage, view, onlyOwner, msg } from "solidscript";
-import { ERC20 } from "solidscript/standards";
+import { Address, storage, view, onlyOwner, msg } from "scriipture";
+import { ERC20 } from "scriipture/standards";
 
 export class MyToken extends ERC20 {
   constructor(initialSupply: bigint) {
@@ -47,9 +47,9 @@ export class MyToken extends ERC20 {
 }
 ```
 
-SolidScript transpiles that into auditable, optimized Solidity, runs it through 8 independent security verifiers, and deploys it to any EVM chain. Your wallet signs the deploy through a browser extension — no private keys touch disk.
+Scriipture transpiles that into auditable, optimized Solidity, runs it through 8 independent security verifiers, and deploys it to any EVM chain. Your wallet signs the deploy through a browser extension — no private keys touch disk.
 
-**Why not just learn Solidity?** You can. Bridges have lost ~$2B because experienced Solidity developers shipped subtle bugs that a transpiler-enforced restricted surface + mandatory static analysis would have caught. SolidScript's claim isn't "TS is intrinsically safer" — it's "the SolidScript pipeline forces safety properties that hand-written Solidity makes optional."
+**Why not just learn Solidity?** You can. Bridges have lost ~$2B because experienced Solidity developers shipped subtle bugs that a transpiler-enforced restricted surface + mandatory static analysis would have caught. Scriipture's claim isn't "TS is intrinsically safer" — it's "the Scriipture pipeline forces safety properties that hand-written Solidity makes optional."
 
 What the pipeline gives you for free:
 - **OpenZeppelin inheritance auto-wired** by decorators (`@onlyOwner` → `Ownable`)
@@ -68,43 +68,43 @@ What the pipeline gives you for free:
 
 ## 2. Install
 
-SolidScript is a Node 18+ package. It runs under any package manager.
+Scriipture is a Node 18+ package. It runs under any package manager.
 
 ```bash
 # Bun
-bun add solidscript
+bun add scriipture
 
 # npm
-npm install solidscript
+npm install scriipture
 
 # yarn
-yarn add solidscript
+yarn add scriipture
 
 # pnpm
-pnpm add solidscript
+pnpm add scriipture
 ```
 
-**That's it for the npm install.** OpenZeppelin v5 + solc (JS) + TypeScript + viem ship as transitive dependencies of `solidscript`, so a single install brings everything the contract pipeline needs at runtime.
+**That's it for the npm install.** OpenZeppelin v5 + solc (JS) + TypeScript + viem ship as transitive dependencies of `scriipture`, so a single install brings everything the contract pipeline needs at runtime.
 
 For the heavy native tools (forge, anvil, slither, mythril) run one more command:
 
 ```bash
-npx solidscript doctor --fix
+npx scriipture doctor --fix
 ```
 
-This auto-downloads Foundry (`forge`, `anvil`) from the official GitHub release for your platform into `~/.solidscript/bin/` and pulls the Slither + Mythril Docker images so you don't need to touch Python or Rust toolchains yourself. After that everything is self-contained.
+This auto-downloads Foundry (`forge`, `anvil`) from the official GitHub release for your platform into `~/.scriipture/bin/` and pulls the Slither + Mythril Docker images so you don't need to touch Python or Rust toolchains yourself. After that everything is self-contained.
 
 ### Optional: Docker
 
-If Docker is on your PATH, `doctor --fix` will pull `trailofbits/eth-security-toolbox` and `mythril/myth` and SolidScript will run Slither/Mythril through Docker transparently. You never see Python.
+If Docker is on your PATH, `doctor --fix` will pull `trailofbits/eth-security-toolbox` and `mythril/myth` and Scriipture will run Slither/Mythril through Docker transparently. You never see Python.
 
-If you don't want Docker, you can install the native tools yourself (`brew install slither-analyzer`, `pipx install mythril`) and SolidScript will pick them up from PATH. Either way works.
+If you don't want Docker, you can install the native tools yourself (`brew install slither-analyzer`, `pipx install mythril`) and Scriipture will pick them up from PATH. Either way works.
 
 ### External tools — all auto-managed
 
-You used to have to install ~5 tools (solc, slither, mythril, forge, anvil) manually. **Not anymore.** `solidscript doctor --fix` handles everything:
+You used to have to install ~5 tools (solc, slither, mythril, forge, anvil) manually. **Not anymore.** `scriipture doctor --fix` handles everything:
 
-| Tool | How SolidScript gets it |
+| Tool | How Scriipture gets it |
 |---|---|
 | `node` (≥18) | already on macOS dev machines |
 | solc (JS) | bundled with the npm install — no native solc required |
@@ -115,26 +115,26 @@ You used to have to install ~5 tools (solc, slither, mythril, forge, anvil) manu
 So the full onboarding is two commands:
 
 ```bash
-npm install solidscript
-npx solidscript doctor --fix
+npm install scriipture
+npx scriipture doctor --fix
 ```
 
 The `doctor` subcommand (without `--fix`) shows you current status — what's auto-cached, what's coming from PATH, what's missing. Run it any time.
 
 ---
 
-## 3. `solidscript doctor`
+## 3. `scriipture doctor`
 
 Always your first command in a fresh environment:
 
 ```bash
-npx solidscript doctor
+npx scriipture doctor
 ```
 
 Sample clean run:
 
 ```
-solidscript doctor — environment check
+scriipture doctor — environment check
 
   ✓ node                                     v25.9.0
   ✓ bun                                      1.3.10
@@ -159,15 +159,15 @@ End-to-end: empty directory → ERC20 token deployed on Base Sepolia → source 
 # 1. Make a project
 mkdir my-token && cd my-token
 npm init -y
-npm install solidscript
+npm install scriipture
 
 # 2. Scaffold
-npx solidscript init
+npx scriipture init
 
 # 3. Replace contracts/Counter.ts with a token (or add a new file)
 cat > contracts/MyToken.ts <<'EOF'
-import { Address, onlyOwner, msg } from "solidscript";
-import { ERC20 } from "solidscript/standards";
+import { Address, onlyOwner, msg } from "scriipture";
+import { ERC20 } from "scriipture/standards";
 
 export class MyToken extends ERC20 {
   constructor(initialSupply: bigint) {
@@ -183,20 +183,20 @@ export class MyToken extends ERC20 {
 EOF
 
 # 4. Transpile to Solidity
-npx solidscript build contracts
+npx scriipture build contracts
 
 # 5. Run the security pipeline (skip forge if you don't have it yet)
-npx solidscript verify contracts --skip fuzz,invariants
+npx scriipture verify contracts --skip fuzz,invariants
 
 # 6. Compile with solc-js
-npx solidscript compile out/sol
+npx scriipture compile out/sol
 
 # 7. Configure Etherscan API key (once)
 #    Get a free key at https://etherscan.io/myapikey
-npx solidscript config set etherscan-key YOUR_KEY
+npx scriipture config set etherscan-key YOUR_KEY
 
 # 8. Deploy via browser wallet — opens MetaMask/Rabby/Coinbase Wallet to sign
-npx solidscript deploy MyToken -n base-sepolia -a 1000000
+npx scriipture deploy MyToken -n base-sepolia -a 1000000
 
 # That's it. The CLI will:
 #  • open your default browser at http://127.0.0.1:7654/
@@ -280,7 +280,7 @@ mint(to: Address, amount: bigint): void {
 ### Built-in globals
 
 ```ts
-import { msg, block } from "solidscript";
+import { msg, block } from "scriipture";
 
 msg.sender    // address — caller
 msg.value     // bigint  — wei sent with the call
@@ -295,7 +295,7 @@ block.chainid    // bigint
 ### Cryptographic helpers
 
 ```ts
-import { keccak256, ecrecover, abi } from "solidscript";
+import { keccak256, ecrecover, abi } from "scriipture";
 
 const hash: Bytes32 = keccak256(abi.encode(srcChainId, recipient, amount));
 const signer: Address = ecrecover(hash, v, r, s);
@@ -304,7 +304,7 @@ const signer: Address = ecrecover(hash, v, r, s);
 ### Address validation
 
 ```ts
-import { validate } from "solidscript";
+import { validate } from "scriipture";
 
 const safe: CheckedAddress = validate(input);   // emits require(input != address(0))
 payable(safe).transfer(amount);                  // type system enforces validated-only
@@ -317,15 +317,15 @@ payable(safe).transfer(amount);                  // type system enforces validat
 All commands accept `--help`:
 
 ```bash
-npx solidscript --help                  # top-level
-npx solidscript deploy --help           # subcommand
+npx scriipture --help                  # top-level
+npx scriipture deploy --help           # subcommand
 ```
 
 ### `init [dir]`
 
-Scaffolds a new SolidScript project in `dir` (default current directory):
+Scaffolds a new Scriipture project in `dir` (default current directory):
 - `contracts/Counter.ts` — starter contract
-- `solidscript.config.ts` — network and compiler config
+- `scriipture.config.ts` — network and compiler config
 - `tsconfig.json` — TS config preconfigured
 - `package.json` scripts: `build`, `validate`, `verify`, `compile`, `deploy`
 - `.gitignore`
@@ -368,8 +368,8 @@ The 9-gate security pipeline. Runs in order:
 Skip individual gates:
 
 ```bash
-npx solidscript verify contracts --skip fuzz,invariants,patterns
-npx solidscript verify contracts --fuzz-runs 5000
+npx scriipture verify contracts --skip fuzz,invariants,patterns
+npx scriipture verify contracts --fuzz-runs 5000
 ```
 
 ### `gasdiff <input>`
@@ -386,9 +386,9 @@ Deploys. Smart defaults:
 - Writes `out/deploy-log/<network>/<Contract>.json` for later reference.
 
 ```bash
-npx solidscript deploy MyToken -n base-sepolia -a 1000000
-npx solidscript deploy MyToken -n base -a 1000000 --wallet prod
-npx solidscript deploy MyToken -n base-sepolia --no-verify
+npx scriipture deploy MyToken -n base-sepolia -a 1000000
+npx scriipture deploy MyToken -n base -a 1000000 --wallet prod
+npx scriipture deploy MyToken -n base-sepolia --no-verify
 ```
 
 ### `secure-deploy <input> -c <Contract> -n <network>`
@@ -400,7 +400,7 @@ Full pipeline: runs `verify` (all 9 gates), refuses to deploy unless every gate 
 Submits source to the chain's Etherscan-family explorer via the v2 multichain API. Reads the address + constructor args from the deploy log automatically.
 
 ```bash
-npx solidscript verify-source MyToken -n base-sepolia
+npx scriipture verify-source MyToken -n base-sepolia
 ```
 
 ### `audit <input>`
@@ -427,22 +427,22 @@ Runs forge against `tests/contracts/*.t.ts` test files. Auto-installs forge-std 
 Rewrites forge/solc stack traces from `.sol:line` references to `.ts:line` via the sourcemap. Pipe it any output:
 
 ```bash
-forge test 2>&1 | npx solidscript trace
+forge test 2>&1 | npx scriipture trace
 ```
 
 ### `wallet new <name>` / `wallet show <name>` / `wallet list` / `wallet balance <name> -n <network>`
 
-Local hot-wallet management for test-only use. Files stored at `~/.solidscript/wallets/<name>.json` mode 0600.
+Local hot-wallet management for test-only use. Files stored at `~/.scriipture/wallets/<name>.json` mode 0600.
 
 > ⚠️ Hot wallets are unsafe for production. Use `--browser` (the default for non-anvil deploys without `--wallet`) for any real value.
 
 ### `config set/get/list/unset`
 
-User-level config in `~/.solidscript/config.json` mode 0600. Known keys: `etherscan-key`, `default-network`, `default-rpc`.
+User-level config in `~/.scriipture/config.json` mode 0600. Known keys: `etherscan-key`, `default-network`, `default-rpc`.
 
 ### `doctor`
 
-Environment check (see [§3](#3-solidscript-doctor)).
+Environment check (see [§3](#3-scriipture-doctor)).
 
 ---
 
@@ -452,15 +452,15 @@ Environment check (see [§3](#3-solidscript-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | SolidScript | 15 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 15 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | solc's built-in (Z3/CHC engine) | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
 | 5 | **Slither** | Slither 0.11+ | 70+ vulnerability detectors — reentrancy, arbitrary-send, dangerous strict equality, locked ether, weak-randomness, … | ~10-30s |
-| 6 | **pattern-library** | SolidScript | inherited bases and imports must be from the known-safe list (OpenZeppelin v5, forge-std) | <1s |
+| 6 | **pattern-library** | Scriipture | inherited bases and imports must be from the known-safe list (OpenZeppelin v5, forge-std) | <1s |
 | 7 | **fuzz-harness** | forge | auto-generates 1 fuzz test per public method, runs 1000 random inputs each, catches unexpected reverts | depends on `--fuzz-runs` |
 | 8 | **invariant-tests** | forge | `@invariant` decorators emit forge invariant tests, runs 128k random call sequences, ensures properties hold across state transitions | similar to fuzz |
-| 9 | **attestation** | SolidScript | reproducible-build manifest with TS hash, Sol hash, bytecode hash, every tool version, every gate result, canonical-JSON fingerprint | <1s |
+| 9 | **attestation** | Scriipture | reproducible-build manifest with TS hash, Sol hash, bytecode hash, every tool version, every gate result, canonical-JSON fingerprint | <1s |
 
 ### Why Mythril is opt-in
 
@@ -477,9 +477,9 @@ docker pull mythril/myth              # if your Python is broken or you want iso
 Then:
 
 ```bash
-solidscript verify contracts --deep                       # full 9-gate run, takes minutes
-solidscript verify contracts --deep --mythril-timeout 30  # tighter timeout for faster CI
-solidscript verify contracts --skip mythril               # explicit opt-out even under --deep
+scriipture verify contracts --deep                       # full 9-gate run, takes minutes
+scriipture verify contracts --deep --mythril-timeout 30  # tighter timeout for faster CI
+scriipture verify contracts --skip mythril               # explicit opt-out even under --deep
 ```
 
 ### What this catches that hand Solidity misses
@@ -505,7 +505,7 @@ The honest claim: **8 of 10 historical exploit classes** are inside the pipeline
 
 ## 9. Browser-wallet flow
 
-When you run `deploy <Contract> -n <network>` without `--wallet`, SolidScript:
+When you run `deploy <Contract> -n <network>` without `--wallet`, Scriipture:
 
 1. Compiles the contract, encodes the deploy transaction (bytecode + ABI-encoded constructor args)
 2. Starts a tiny HTTP server on `http://127.0.0.1:7654/`
@@ -535,10 +535,10 @@ Built-in networks:
 | `base-sepolia` | 84532 | https://sepolia.base.org |
 | `base` | 8453 | https://mainnet.base.org |
 
-Add any viem-supported chain in `solidscript.config.ts`:
+Add any viem-supported chain in `scriipture.config.ts`:
 
 ```ts
-import type { Config } from "solidscript";
+import type { Config } from "scriipture";
 
 const config: Config = {
   networks: {
@@ -560,27 +560,27 @@ const config: Config = {
 export default config;
 ```
 
-Then `npx solidscript deploy MyContract -n optimism` just works. Browser-wallet flow handles chain switching automatically — your wallet extension prompts to add the chain if it's not in its list.
+Then `npx scriipture deploy MyContract -n optimism` just works. Browser-wallet flow handles chain switching automatically — your wallet extension prompts to add the chain if it's not in its list.
 
 ---
 
 ## 11. Source verification
 
-After deploy, by default SolidScript auto-submits source to the chain's Etherscan-family explorer. This uses Etherscan's **v2 multichain API** — one API key works for every chain (Base, Optimism, Arbitrum, Polygon, ZkSync, Eth mainnet, every testnet).
+After deploy, by default Scriipture auto-submits source to the chain's Etherscan-family explorer. This uses Etherscan's **v2 multichain API** — one API key works for every chain (Base, Optimism, Arbitrum, Polygon, ZkSync, Eth mainnet, every testnet).
 
 ### One-time setup
 
 ```bash
 # Register free at https://etherscan.io/myapikey
-npx solidscript config set etherscan-key YOUR_KEY
+npx scriipture config set etherscan-key YOUR_KEY
 ```
 
 ### Behavior
 
 - If `etherscan-key` is configured AND network ≠ `anvil`, every `deploy` auto-verifies.
 - Override with `--no-verify`.
-- Verify retroactively: `npx solidscript verify-source MyToken -n base-sepolia` (reads address + args from the deploy log).
-- Or explicitly: `npx solidscript verify-source MyToken -n base-sepolia --address 0x… --args 1000000`.
+- Verify retroactively: `npx scriipture verify-source MyToken -n base-sepolia` (reads address + args from the deploy log).
+- Or explicitly: `npx scriipture verify-source MyToken -n base-sepolia --address 0x… --args 1000000`.
 
 ### What gets submitted
 
@@ -594,9 +594,9 @@ A plugin can register additional optimizer passes and validator rules:
 
 ```ts
 // plugins/my-plugin.ts
-import type { SolidScriptPlugin } from "solidscript";
+import type { ScriipturePlugin } from "scriipture";
 
-const plugin: SolidScriptPlugin = {
+const plugin: ScriipturePlugin = {
   name: "my-plugin",
   validatorRules: [
     {
@@ -622,7 +622,7 @@ const plugin: SolidScriptPlugin = {
 export default plugin;
 ```
 
-Load it via `solidscript.config.ts`:
+Load it via `scriipture.config.ts`:
 
 ```ts
 const config: Config = {
@@ -640,24 +640,24 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Error | Likely cause | Fix |
 |---|---|---|
 | `No matching version found for hardhat@^1.x.x` | npm cache issue from an unrelated package | `bun install` instead, or `npm install --legacy-peer-deps` |
-| `Module not found: solc/Test.sol` | forge-std not installed | first `solidscript test` run auto-installs it via git clone; otherwise check `out/forge/lib/forge-std/` exists |
-| `OwnableUnauthorizedAccount(0x…)` on deploy | you're using OZ v5; the `Ownable` constructor needs an `initialOwner` arg — SolidScript injects `Ownable(msg.sender)` automatically. If you see this error, your contract is doing something unusual; report as a bug |
-| `No arguments passed to the base constructor` | a base contract requires constructor args that SolidScript hasn't auto-injected — pass them explicitly via `super(...)` |
+| `Module not found: solc/Test.sol` | forge-std not installed | first `scriipture test` run auto-installs it via git clone; otherwise check `out/forge/lib/forge-std/` exists |
+| `OwnableUnauthorizedAccount(0x…)` on deploy | you're using OZ v5; the `Ownable` constructor needs an `initialOwner` arg — Scriipture injects `Ownable(msg.sender)` automatically. If you see this error, your contract is doing something unusual; report as a bug |
+| `No arguments passed to the base constructor` | a base contract requires constructor args that Scriipture hasn't auto-injected — pass them explicitly via `super(...)` |
 | `Error (9553): Invalid type for argument` | TS-only `Number()` or `BigInt()` cast leaked into Solidity. Type your bigint locals with `: bigint` and drop the conversions |
 | `slither: command not found` | macOS: `brew install slither-analyzer`; Linux: `pip install slither-analyzer` |
 | `forge: command not found` | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
 | Browser deploy hangs forever | check the browser tab actually opened; if it didn't, copy the URL from the CLI output and paste it manually |
 | Etherscan verify returns "Already Verified" | benign — your contract was already verified, often because someone deployed identical bytecode |
-| Etherscan verify fails with "Source code is not match" | your local solc version differs from what produced the deployed bytecode. Use `solidscript verify-source <name> -n <network>` with the same compiler version you deployed with |
+| Etherscan verify fails with "Source code is not match" | your local solc version differs from what produced the deployed bytecode. Use `scriipture verify-source <name> -n <network>` with the same compiler version you deployed with |
 
 ---
 
 ## 14. Comparison
 
-| Capability | Raw Solidity | Hardhat | Foundry | **SolidScript** |
+| Capability | Raw Solidity | Hardhat | Foundry | **Scriipture** |
 |---|---|---|---|---|
-| Compile | solc | hardhat compile | forge build | **solidscript compile** |
-| Unit tests | manual | mocha-style JS | Solidity-native | **solidscript test** (TS bridge to forge) |
+| Compile | solc | hardhat compile | forge build | **scriipture compile** |
+| Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
 | Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 15 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
@@ -668,4 +668,4 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Cross-chain support | manual | per-chain config | per-chain config | **viem multichain + etherscan v2 multichain key** |
 | Learning curve | high | medium | medium-high | **none for TS devs** |
 
-If you're already deep in Foundry, SolidScript probably isn't for you — Foundry is more powerful for advanced Solidity work. SolidScript shines for TS devs who want to ship safe contracts without learning a second language and toolchain.
+If you're already deep in Foundry, Scriipture probably isn't for you — Foundry is more powerful for advanced Solidity work. Scriipture shines for TS devs who want to ship safe contracts without learning a second language and toolchain.

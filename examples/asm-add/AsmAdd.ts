@@ -1,4 +1,4 @@
-import { assembly, yul } from "solidscript";
+import { assembly, yul } from "scriipture";
 
 export class AsmAdd {
   add(a: bigint, b: bigint): bigint {

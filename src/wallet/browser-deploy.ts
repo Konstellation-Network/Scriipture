@@ -122,7 +122,7 @@ function html(): string {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>SolidScript browser deploy</title>
+<title>Scriipture browser deploy</title>
 <style>
   body { font-family: -apple-system, "SF Pro Text", Segoe UI, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #222; }
   h1 { font-size: 18px; margin-bottom: 6px; }
@@ -135,7 +135,7 @@ function html(): string {
 </style>
 </head>
 <body>
-<h1 id="title">SolidScript deploy</h1>
+<h1 id="title">Scriipture deploy</h1>
 <div class="meta" id="meta">loading…</div>
 <button id="go" disabled>Connect wallet & deploy</button>
 <pre id="log"></pre>

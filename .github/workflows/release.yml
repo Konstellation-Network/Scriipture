@@ -81,14 +81,14 @@ jobs:
           VERSION="${REF#v}"
           for i in $(seq 1 18); do
             sleep 5
-            PUBLISHED=$(npm view "solidscript@$VERSION" version 2>/dev/null || echo "")
+            PUBLISHED=$(npm view "scriipture@$VERSION" version 2>/dev/null || echo "")
             if [ "$PUBLISHED" = "$VERSION" ]; then
-              echo "✓ solidscript@$VERSION is live on https://registry.npmjs.org/ (attempt $i / 18)"
+              echo "✓ scriipture@$VERSION is live on https://registry.npmjs.org/ (attempt $i / 18)"
               exit 0
             fi
             echo "attempt $i / 18: not visible yet (got '$PUBLISHED'); retrying in 5s…"
           done
-          echo "::error::solidscript@$VERSION not visible on registry after 90s of polling. Publish truly failed."
+          echo "::error::scriipture@$VERSION not visible on registry after 90s of polling. Publish truly failed."
           exit 1
 
       - name: create GitHub release

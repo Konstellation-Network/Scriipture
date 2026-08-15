@@ -1,4 +1,4 @@
-# SolidScript docs site — Mintlify setup brief
+# Scriipture docs site — Mintlify setup brief
 
 > Hand this whole file to the engineer setting up Mintlify on the landing page repo. It's self-contained: context, goal, content sources, structure, setup steps, theming, deployment, sync strategy.
 >
@@ -6,25 +6,25 @@
 
 ---
 
-## Context: what SolidScript is
+## Context: what Scriipture is
 
-SolidScript is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, SolidScript transpiles them to auditable Solidity, runs security analysis, and deploys to any EVM chain. Source-of-truth is at https://github.com/usezoracle/SolidScript (MIT, public).
+Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to any EVM chain. Source-of-truth is at https://github.com/usezoracle/Scriipture (MIT, public).
 
-Already shipped as an npm package: `npm install solidscript`. We need a docs site for it.
+Already shipped as an npm package: `npm install scriipture`. We need a docs site for it.
 
 ## Goal
 
 Add Mintlify-powered docs to the **landing page repo** (this repo, where the marketing site already lives). Docs render at `/docs/*` or at a `docs.` subdomain — whichever fits the existing site architecture.
 
-The content is being handed over from SolidScript's repo as a set of source files; you'll convert it into Mintlify's MDX format, wire up the navigation, theme it to match the marketing brand, and deploy.
+The content is being handed over from Scriipture's repo as a set of source files; you'll convert it into Mintlify's MDX format, wire up the navigation, theme it to match the marketing brand, and deploy.
 
 ## Important framing
 
-**This is package-usage documentation, not API reference.** SolidScript is a CLI tool and a TypeScript library — users invoke it via `npx solidscript ...` or `import { … } from "solidscript"`. There is no HTTP service for end users to call. Treat this exactly like the docs for a typical npm dev tool (think: Vite docs, viem docs, Prisma CLI docs) — install, concepts, commands, library API, guides. Do not set up an "API Reference" tab with OpenAPI; we have no public HTTP API.
+**This is package-usage documentation, not API reference.** Scriipture is a CLI tool and a TypeScript library — users invoke it via `npx scriipture ...` or `import { … } from "scriipture"`. There is no HTTP service for end users to call. Treat this exactly like the docs for a typical npm dev tool (think: Vite docs, viem docs, Prisma CLI docs) — install, concepts, commands, library API, guides. Do not set up an "API Reference" tab with OpenAPI; we have no public HTTP API.
 
 ## What you're being given
 
-The maintainer is sharing the following from the SolidScript repo (paths preserved for reference; copy them to the appropriate Mintlify location in this repo):
+The maintainer is sharing the following from the Scriipture repo (paths preserved for reference; copy them to the appropriate Mintlify location in this repo):
 
 - `docs/details.md` — the comprehensive 14-section user guide. This is the bulk of the docs content. You'll split it into separate MDX pages.
 - `docs/cli-commands.yaml` — machine-readable manifest of every CLI subcommand and flag. Useful as a quick reference; can become a single "All commands" overview page, or skipped entirely if the per-command pages already cover it.
@@ -41,7 +41,7 @@ The maintainer is sharing the following from the SolidScript repo (paths preserv
 
 ```
 docs/
-├─ introduction          (the "what is SolidScript" + value props)
+├─ introduction          (the "what is Scriipture" + value props)
 ├─ install               (npm install + doctor --fix flow)
 ├─ quickstart            (60-second walkthrough — token deployed to Base Sepolia)
 │
@@ -103,7 +103,7 @@ Note: Mintlify renamed `mint.json` → `docs.json` in their newer config format.
 - Add frontmatter (`title`, `description`)
 - Convert any GitHub-flavored Markdown that Mintlify doesn't natively support
 - Replace ASCII tables with Mintlify's `<Card>` / `<Steps>` / `<AccordionGroup>` components where it improves scanability
-- Use `<CodeGroup>` to show **the TypeScript source and the generated Solidity side-by-side** — this is SolidScript's signature visual; do it on every relevant page
+- Use `<CodeGroup>` to show **the TypeScript source and the generated Solidity side-by-side** — this is Scriipture's signature visual; do it on every relevant page
 
 Example MDX page (`docs/concepts/decorators.mdx`):
 
@@ -113,13 +113,13 @@ title: "Decorators"
 description: "How TypeScript decorators map to Solidity modifiers and base contracts"
 ---
 
-SolidScript decorators are how you declare modifiers, visibility, and inheritance. Each decorator maps to a specific Solidity construct.
+Scriipture decorators are how you declare modifiers, visibility, and inheritance. Each decorator maps to a specific Solidity construct.
 
 ## `@onlyOwner`
 
 <CodeGroup>
 ```ts MyToken.ts
-import { onlyOwner } from "solidscript";
+import { onlyOwner } from "scriipture";
 
 export class MyToken {
   @onlyOwner
@@ -140,7 +140,7 @@ contract MyToken is Ownable {
 ```
 </CodeGroup>
 
-What SolidScript does automatically: imports OZ `Ownable`, adds `is Ownable`, injects `Ownable(msg.sender)` in the constructor.
+What Scriipture does automatically: imports OZ `Ownable`, adds `is Ownable`, injects `Ownable(msg.sender)` in the constructor.
 
 … (continue with @view, @payable, @nonReentrant, @storage, @assembly, @invariant, etc.)
 ```
@@ -153,7 +153,7 @@ Mintlify's nav config. Skeleton:
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "SolidScript",
+  "name": "Scriipture",
   "colors": {
     "primary": "#0066FF",
     "light":   "#3385FF",
@@ -223,8 +223,8 @@ Mintlify's nav config. Skeleton:
   },
   "navbar": {
     "links": [
-      { "label": "GitHub", "href": "https://github.com/usezoracle/SolidScript" },
-      { "label": "npm",    "href": "https://npmjs.com/package/solidscript" }
+      { "label": "GitHub", "href": "https://github.com/usezoracle/Scriipture" },
+      { "label": "npm",    "href": "https://npmjs.com/package/scriipture" }
     ],
     "primary": {
       "type": "button",
@@ -234,7 +234,7 @@ Mintlify's nav config. Skeleton:
   },
   "footer": {
     "socials": {
-      "github":  "https://github.com/usezoracle/SolidScript",
+      "github":  "https://github.com/usezoracle/Scriipture",
       "x":       "https://x.com/usezoracle",
       "website": "https://usezoracle.com"
     }
@@ -267,7 +267,7 @@ Two paths:
 1. Sign up at https://mintlify.com
 2. Install the Mintlify GitHub app on this landing page repo
 3. In the Mintlify dashboard, point at the `docs/` subfolder
-4. Configure custom domain (e.g. `docs.usezoracle.com` or `docs.solidscript.dev`)
+4. Configure custom domain (e.g. `docs.usezoracle.com` or `docs.scriipture.dev`)
 5. Every push to `main` triggers a build; preview deployments per PR
 
 **Path B — Self-host:**
@@ -281,15 +281,15 @@ Path A is the standard pattern for dev tools (Resend, Cal.com, Anthropic all use
 
 Once the docs are live, add a `Docs` link to the landing page navigation bar pointing to the deployed URL.
 
-## Keeping docs in sync with SolidScript
+## Keeping docs in sync with Scriipture
 
-SolidScript ships from its own repo (`usezoracle/SolidScript`). When the maintainer adds features there, the docs in this repo need to follow. Two approaches:
+Scriipture ships from its own repo (`usezoracle/Scriipture`). When the maintainer adds features there, the docs in this repo need to follow. Two approaches:
 
 **Option A — Manual sync:**
-On each SolidScript release, the maintainer opens a PR here to update the relevant MDX pages. Slow but lets you tightly curate docs.
+On each Scriipture release, the maintainer opens a PR here to update the relevant MDX pages. Slow but lets you tightly curate docs.
 
 **Option B — Scripted sync:**
-A small `npm run sync-docs` script fetches the latest `docs/details.md`, `openapi.yaml`, `cli-commands.yaml` from `usezoracle/SolidScript`, diffs against the local MDX files, and surfaces what's changed. Faster, but you still need a human to review and split into MDX.
+A small `npm run sync-docs` script fetches the latest `docs/details.md`, `openapi.yaml`, `cli-commands.yaml` from `usezoracle/Scriipture`, diffs against the local MDX files, and surfaces what's changed. Faster, but you still need a human to review and split into MDX.
 
 Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream content has drifted.
 
@@ -298,9 +298,9 @@ Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream
 - **Audience**: TypeScript developers who have never written Solidity.
 - **Tone**: direct, technical, honest. Skip marketing language inside docs — those belong on the landing page. Inside docs, lead with code and concrete examples.
 - **Every page should have at least one code block** in the first 200 words.
-- **Use `<CodeGroup>` for TS↔Sol comparisons** wherever the magic is in what SolidScript auto-generates.
+- **Use `<CodeGroup>` for TS↔Sol comparisons** wherever the magic is in what Scriipture auto-generates.
 - **Use `<Note>` for tips, `<Warning>` for footguns, `<Info>` for context.** Don't overuse — they lose force.
-- **Link liberally to the SolidScript GitHub** for source-of-truth on specific functions (`https://github.com/usezoracle/SolidScript/blob/main/src/...`).
+- **Link liberally to the Scriipture GitHub** for source-of-truth on specific functions (`https://github.com/usezoracle/Scriipture/blob/main/src/...`).
 - **Don't paste the full security-pipeline gate list on every page.** Link to `/concepts/security-pipeline` and let that be the canonical reference.
 
 ## Deliverables when you're done
@@ -322,4 +322,4 @@ When you start work, get these answered:
 2. **Brand colors + logo file** — need the exact hex values and SVG logo from whoever owns design.
 3. **Sync cadence** — manual or scripted; weekly cron or per-release.
 4. **Mintlify plan tier** — free works for most projects but custom domains and analytics often require paid; check what's needed.
-5. **Versioned docs?** — if SolidScript ships breaking changes between minor versions, you might need versioned docs (`/v0.2/`, `/v0.3/`). For now, latest-only is fine.
+5. **Versioned docs?** — if Scriipture ships breaking changes between minor versions, you might need versioned docs (`/v0.2/`, `/v0.3/`). For now, latest-only is fine.

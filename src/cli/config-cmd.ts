@@ -33,7 +33,7 @@ export async function configListCommand(opts: { revealKeys?: boolean }): Promise
   const cfg = loadUserConfig();
   const keys = new Set([...knownKeys(), ...Object.keys(cfg)]);
   if (keys.size === 0) {
-    console.log(pc.dim("no config set yet — use `solidscript config set <key> <value>`"));
+    console.log(pc.dim("no config set yet — use `scriipture config set <key> <value>`"));
     return;
   }
   for (const k of keys) {

@@ -15,8 +15,8 @@ export async function walletNewCommand(name: string): Promise<void> {
     console.log(pc.yellow("   Anyone with shell access to this Mac can drain it."));
     console.log(pc.yellow("   Use only for testnets or small-value tests."));
     console.log("");
-    console.log(pc.dim("  reveal private key:   solidscript wallet show ") + pc.dim(name) + pc.dim(" --reveal-key"));
-    console.log(pc.dim("  check balance:        solidscript wallet balance ") + pc.dim(name) + pc.dim(" --network base-sepolia"));
+    console.log(pc.dim("  reveal private key:   scriipture wallet show ") + pc.dim(name) + pc.dim(" --reveal-key"));
+    console.log(pc.dim("  check balance:        scriipture wallet balance ") + pc.dim(name) + pc.dim(" --network base-sepolia"));
   } catch (err: any) {
     console.error(pc.red(`✗ ${err.message}`));
     process.exit(1);
@@ -46,7 +46,7 @@ export async function walletShowCommand(name: string, opts: { revealKey?: boolea
 export async function walletListCommand(): Promise<void> {
   const wallets = listWallets();
   if (wallets.length === 0) {
-    console.log(pc.dim("no wallets yet — solidscript wallet new <name>"));
+    console.log(pc.dim("no wallets yet — scriipture wallet new <name>"));
     return;
   }
   for (const w of wallets) {

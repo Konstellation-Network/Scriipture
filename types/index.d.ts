@@ -1,4 +1,4 @@
-declare module "solidscript" {
+declare module "scriipture" {
   export type Address = string & { readonly __brand: "Address" };
   export type CheckedAddress = Address & { readonly __checked: true };
   export type Bytes32 = string & { readonly __brand: "Bytes32" };

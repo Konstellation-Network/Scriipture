@@ -1,6 +1,6 @@
-# Contributing to SolidScript
+# Contributing to Scriipture
 
-Thanks for considering a contribution. SolidScript is a TypeScript→Solidity transpiler with a built-in 9-gate security pipeline, and we welcome help across all of it: new optimizer passes, new validator rules, new examples, docs, bug fixes.
+Thanks for considering a contribution. Scriipture is a TypeScript→Solidity transpiler with a built-in 9-gate security pipeline, and we welcome help across all of it: new optimizer passes, new validator rules, new examples, docs, bug fixes.
 
 This guide covers the dev loop, where to add things, and how to get a PR merged.
 
@@ -20,8 +20,8 @@ Recommended (for the full test loop):
 - Docker (alternative to brewing slither/mythril) — pulls `trailofbits/eth-security-toolbox` and `mythril/myth` images
 
 ```bash
-git clone https://github.com/usezoracle/SolidScript.git
-cd SolidScript
+git clone https://github.com/usezoracle/Scriipture.git
+cd Scriipture
 bun install
 bun run typecheck
 bun test
@@ -55,7 +55,7 @@ src/
 ├─ deploy/          viem deployer + network registry
 ├─ wallet/          local hot-wallet store + browser-deploy bridge
 ├─ sourcemaps/      .sol-line → .ts-line mapping
-├─ config/          user-level config (~/.solidscript/config.json) + project config
+├─ config/          user-level config (~/.scriipture/config.json) + project config
 ├─ plugin/          plugin API + loader
 ├─ test-runner/     forge bridge
 └─ cli/             every CLI subcommand
@@ -135,7 +135,7 @@ Adding tests for a new validator rule: one contract under `tests/contracts/` tha
 
 ## Reporting issues / security
 
-- **Bugs and feature requests**: use the GitHub issue templates at https://github.com/usezoracle/SolidScript/issues/new/choose
+- **Bugs and feature requests**: use the GitHub issue templates at https://github.com/usezoracle/Scriipture/issues/new/choose
 - **Security vulnerabilities**: see [SECURITY.md](./SECURITY.md). Please don't open a public issue for security reports.
 
 ---

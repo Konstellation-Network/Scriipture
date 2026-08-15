@@ -1,9 +1,9 @@
 import path from "node:path";
 import fs from "node:fs";
-import { setPluginRegistry, type SolidScriptPlugin } from "./api";
+import { setPluginRegistry, type ScriipturePlugin } from "./api";
 
-export async function loadPlugins(pluginPaths: string[], cwd: string = process.cwd()): Promise<SolidScriptPlugin[]> {
-  const plugins: SolidScriptPlugin[] = [];
+export async function loadPlugins(pluginPaths: string[], cwd: string = process.cwd()): Promise<ScriipturePlugin[]> {
+  const plugins: ScriipturePlugin[] = [];
   for (const raw of pluginPaths) {
     const resolved = resolvePlugin(raw, cwd);
     if (!resolved) {
@@ -11,9 +11,9 @@ export async function loadPlugins(pluginPaths: string[], cwd: string = process.c
       continue;
     }
     const mod = await import(resolved);
-    const candidate = (mod.default ?? mod) as SolidScriptPlugin;
+    const candidate = (mod.default ?? mod) as ScriipturePlugin;
     if (!candidate || !candidate.name) {
-      console.warn(`plugin at ${resolved} does not export a SolidScriptPlugin`);
+      console.warn(`plugin at ${resolved} does not export a ScriipturePlugin`);
       continue;
     }
     plugins.push(candidate);

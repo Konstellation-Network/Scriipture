@@ -1,4 +1,4 @@
-import { storage, onlyOwner, Address, msg } from "solidscript";
+import { storage, onlyOwner, Address, msg } from "scriipture";
 
 export class RequireToError {
   @storage value: bigint = 0n;

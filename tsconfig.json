@@ -18,8 +18,8 @@
     "isolatedModules": true,
     "baseUrl": ".",
     "paths": {
-      "solidscript": ["./types/index.d.ts"],
-      "solidscript/standards": ["./types/standards.d.ts"],
+      "scriipture": ["./types/index.d.ts"],
+      "scriipture/standards": ["./types/standards.d.ts"],
       "forge-std": ["./types/forge.d.ts"]
     },
     "types": ["bun-types"]

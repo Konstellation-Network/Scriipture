@@ -7,15 +7,15 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What's the situation where the current SolidScript falls short?
-      placeholder: "When I do X, I have to manually Y because SolidScript doesn't support Z…"
+      description: What's the situation where the current Scriipture falls short?
+      placeholder: "When I do X, I have to manually Y because Scriipture doesn't support Z…"
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
       label: Proposed solution
-      description: What would you like SolidScript to do?
+      description: What would you like Scriipture to do?
       placeholder: "A new decorator `@foo` that emits …, or a new CLI flag `--bar` that …"
     validations:
       required: true

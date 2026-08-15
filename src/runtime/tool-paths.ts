@@ -1,11 +1,11 @@
 /**
- * Tool resolver — turns `npm install solidscript` into a self-contained
- * toolchain. Native binaries (forge, anvil) auto-download to ~/.solidscript/bin/
+ * Tool resolver — turns `npm install scriipture` into a self-contained
+ * toolchain. Native binaries (forge, anvil) auto-download to ~/.scriipture/bin/
  * on first use. Python tools (slither, mythril) fall back to Docker if
  * Docker is installed.
  *
  * Order of resolution for any tool:
- *   1. ~/.solidscript/bin/<tool>       (auto-downloaded native)
+ *   1. ~/.scriipture/bin/<tool>       (auto-downloaded native)
  *   2. system PATH                     (user-installed)
  *   3. docker fallback                 (if image is pullable)
  *   4. clear error with install hint
@@ -16,7 +16,7 @@ import os from "node:os";
 import https from "node:https";
 import { spawnSync } from "node:child_process";
 
-const BIN_DIR = path.join(os.homedir(), ".solidscript", "bin");
+const BIN_DIR = path.join(os.homedir(), ".scriipture", "bin");
 
 export interface ToolResolution {
   /** absolute path to a runnable binary, OR a docker invocation prefix */
@@ -97,10 +97,10 @@ async function downloadAndExtractFoundry(): Promise<void> {
   const asset = foundryAsset(PLATFORM);
   const tgzPath = path.join(BIN_DIR, "foundry.tar.gz");
 
-  process.stderr.write(`[solidscript] downloading foundry for ${PLATFORM} from ${asset.url}\n`);
+  process.stderr.write(`[scriipture] downloading foundry for ${PLATFORM} from ${asset.url}\n`);
   await downloadFile(asset.url, tgzPath);
 
-  process.stderr.write(`[solidscript] extracting…\n`);
+  process.stderr.write(`[scriipture] extracting…\n`);
   const r = spawnSync("tar", ["-xzf", tgzPath, "-C", BIN_DIR], { stdio: "inherit" });
   if (r.status !== 0) throw new Error("tar extract failed");
   fs.unlinkSync(tgzPath);
@@ -109,7 +109,7 @@ async function downloadAndExtractFoundry(): Promise<void> {
     const p = path.join(BIN_DIR, bin);
     if (fs.existsSync(p)) fs.chmodSync(p, 0o755);
   }
-  process.stderr.write(`[solidscript] installed: ${asset.binaries.filter((b) => fs.existsSync(path.join(BIN_DIR, b))).join(", ")}\n`);
+  process.stderr.write(`[scriipture] installed: ${asset.binaries.filter((b) => fs.existsSync(path.join(BIN_DIR, b))).join(", ")}\n`);
 }
 
 function pipxInstalled(): boolean {
@@ -118,11 +118,11 @@ function pipxInstalled(): boolean {
 }
 
 function tryPipxInstall(pkg: string, binName: string): string | null {
-  process.stderr.write(`[solidscript] running 'pipx install ${pkg}' (one-time, ~1-2 minutes)…\n`);
+  process.stderr.write(`[scriipture] running 'pipx install ${pkg}' (one-time, ~1-2 minutes)…\n`);
   const r = spawnSync("pipx", ["install", pkg], { encoding: "utf8" });
   if (r.status !== 0) {
     const err = (r.stderr || r.stdout || "").trim().split("\n").slice(-3).join("\n");
-    process.stderr.write(`[solidscript] pipx install ${pkg} failed:\n  ${err}\n`);
+    process.stderr.write(`[scriipture] pipx install ${pkg} failed:\n  ${err}\n`);
     return null;
   }
   const candidates = [
@@ -132,16 +132,16 @@ function tryPipxInstall(pkg: string, binName: string): string | null {
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) {
-      process.stderr.write(`[solidscript] installed: ${c}\n`);
+      process.stderr.write(`[scriipture] installed: ${c}\n`);
       return c;
     }
   }
   const onPath = whichOnPath(binName);
   if (onPath) {
-    process.stderr.write(`[solidscript] installed: ${onPath}\n`);
+    process.stderr.write(`[scriipture] installed: ${onPath}\n`);
     return onPath;
   }
-  process.stderr.write(`[solidscript] ${pkg} pipx install reported success but ${binName} binary not found; check ~/.local/bin\n`);
+  process.stderr.write(`[scriipture] ${pkg} pipx install reported success but ${binName} binary not found; check ~/.local/bin\n`);
   return null;
 }
 
@@ -172,12 +172,12 @@ function downloadFile(url: string, dest: string): Promise<void> {
 export async function resolveTool(name: "forge" | "anvil" | "cast" | "chisel" | "slither" | "myth"): Promise<ToolResolution> {
   if (name === "forge" || name === "anvil" || name === "cast" || name === "chisel") {
     const cached = cachedBin(name);
-    if (cached) return { cmd: cached, argPrefix: [], via: "native", description: `~/.solidscript/bin/${name}` };
+    if (cached) return { cmd: cached, argPrefix: [], via: "native", description: `~/.scriipture/bin/${name}` };
     const onPath = whichOnPath(name);
     if (onPath) return { cmd: onPath, argPrefix: [], via: "system-path", description: onPath };
     await downloadAndExtractFoundry();
     const after = cachedBin(name);
-    if (after) return { cmd: after, argPrefix: [], via: "native", description: `~/.solidscript/bin/${name}` };
+    if (after) return { cmd: after, argPrefix: [], via: "native", description: `~/.scriipture/bin/${name}` };
     throw new Error(`failed to install ${name} from Foundry release`);
   }
 
@@ -187,7 +187,7 @@ export async function resolveTool(name: "forge" | "anvil" | "cast" | "chisel" | 
     if (dockerInstalled()) {
       const image = "trailofbits/eth-security-toolbox";
       if (!dockerImagePresent(image)) {
-        process.stderr.write(`[solidscript] pulling ${image} (one-time)…\n`);
+        process.stderr.write(`[scriipture] pulling ${image} (one-time)…\n`);
         const pull = spawnSync("docker", ["pull", image], { stdio: "inherit" });
         if (pull.status !== 0) throw new Error(`docker pull ${image} failed`);
       }
@@ -202,7 +202,7 @@ export async function resolveTool(name: "forge" | "anvil" | "cast" | "chisel" | 
       const installed = tryPipxInstall("slither-analyzer", "slither");
       if (installed) return { cmd: installed, argPrefix: [], via: "pipx", description: installed };
     }
-    throw new Error("slither not available: install Docker (recommended), or install pipx then re-run `solidscript doctor --fix`, or `brew install slither-analyzer`");
+    throw new Error("slither not available: install Docker (recommended), or install pipx then re-run `scriipture doctor --fix`, or `brew install slither-analyzer`");
   }
 
   if (name === "myth") {
@@ -211,7 +211,7 @@ export async function resolveTool(name: "forge" | "anvil" | "cast" | "chisel" | 
     if (dockerInstalled()) {
       const image = "mythril/myth";
       if (!dockerImagePresent(image)) {
-        process.stderr.write(`[solidscript] pulling ${image} (one-time)…\n`);
+        process.stderr.write(`[scriipture] pulling ${image} (one-time)…\n`);
         const pull = spawnSync("docker", ["pull", image], { stdio: "inherit" });
         if (pull.status !== 0) throw new Error(`docker pull ${image} failed`);
       }
@@ -226,7 +226,7 @@ export async function resolveTool(name: "forge" | "anvil" | "cast" | "chisel" | 
       const installed = tryPipxInstall("mythril", "myth");
       if (installed) return { cmd: installed, argPrefix: [], via: "pipx", description: installed };
     }
-    throw new Error("mythril not available: install Docker (recommended), or install pipx then re-run `solidscript doctor --fix`, or `pipx install mythril`");
+    throw new Error("mythril not available: install Docker (recommended), or install pipx then re-run `scriipture doctor --fix`, or `pipx install mythril`");
   }
 
   throw new Error(`unknown tool: ${name}`);
@@ -235,10 +235,10 @@ export async function resolveTool(name: "forge" | "anvil" | "cast" | "chisel" | 
 export function toolStatus(name: "forge" | "anvil" | "slither" | "myth"): { ok: boolean; via?: string; hint?: string } {
   if (name === "forge" || name === "anvil") {
     const cached = cachedBin(name);
-    if (cached) return { ok: true, via: `~/.solidscript/bin/${name}` };
+    if (cached) return { ok: true, via: `~/.scriipture/bin/${name}` };
     const onPath = whichOnPath(name);
     if (onPath) return { ok: true, via: onPath };
-    return { ok: false, hint: `auto-downloaded on first use, or run \`solidscript doctor --fix\`` };
+    return { ok: false, hint: `auto-downloaded on first use, or run \`scriipture doctor --fix\`` };
   }
   if (name === "slither" || name === "myth") {
     const tool = name === "slither" ? "slither" : "myth";
@@ -247,12 +247,12 @@ export function toolStatus(name: "forge" | "anvil" | "slither" | "myth"): { ok: 
     if (dockerInstalled()) {
       const image = name === "slither" ? "trailofbits/eth-security-toolbox" : "mythril/myth";
       if (dockerImagePresent(image)) return { ok: true, via: `docker:${image}` };
-      return { ok: false, hint: `Docker present; run \`solidscript doctor --fix\` to pull ${image}` };
+      return { ok: false, hint: `Docker present; run \`scriipture doctor --fix\` to pull ${image}` };
     }
     if (pipxInstalled()) {
-      return { ok: false, hint: `pipx present; run \`solidscript doctor --fix\` to install ${name === "slither" ? "slither-analyzer" : "mythril"} via pipx` };
+      return { ok: false, hint: `pipx present; run \`scriipture doctor --fix\` to install ${name === "slither" ? "slither-analyzer" : "mythril"} via pipx` };
     }
-    return { ok: false, hint: `install Docker, or install pipx (\`brew install pipx\`), then \`solidscript doctor --fix\`` };
+    return { ok: false, hint: `install Docker, or install pipx (\`brew install pipx\`), then \`scriipture doctor --fix\`` };
   }
   return { ok: false };
 }

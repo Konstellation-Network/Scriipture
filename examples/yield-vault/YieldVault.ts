@@ -12,10 +12,10 @@ import {
   validate,
   msg,
   block,
-} from "solidscript";
+} from "scriipture";
 
 /// YieldVault — a multi-tier staking vault with time-lock, slashing,
-/// and emergency pause. Built to exercise the full SolidScript security pipeline.
+/// and emergency pause. Built to exercise the full Scriipture security pipeline.
 export class YieldVault {
   @storage totalStaked: bigint = 0n;
   @storage totalRewardsPaid: bigint = 0n;
@@ -160,5 +160,5 @@ export class YieldVault {
   }
 }
 
-declare function payable(a: import("solidscript").CheckedAddress): { transfer(v: bigint): void };
+declare function payable(a: import("scriipture").CheckedAddress): { transfer(v: bigint): void };
 declare function address(c: object): { balance: bigint };

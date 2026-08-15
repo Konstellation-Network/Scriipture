@@ -1,5 +1,5 @@
-import { Address, onlyOwner, msg } from "solidscript";
-import { ERC20 } from "solidscript/standards";
+import { Address, onlyOwner, msg } from "scriipture";
+import { ERC20 } from "scriipture/standards";
 
 export class MyToken extends ERC20 {
   constructor(initialSupply: bigint) {

@@ -159,7 +159,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   // Gate 4 — Mythril (symbolic execution, opt-in via --deep)
   banner("Gate 4/9 — Mythril (symbolic execution)");
   if (!opts.deep) {
-    reportGate(true, "skipped (run `solidscript verify --deep` to enable; mythril is slow, ~90s/contract)");
+    reportGate(true, "skipped (run `scriipture verify --deep` to enable; mythril is slow, ~90s/contract)");
     for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "mythril", passed: true, detail: "skipped (not --deep)" });
   } else if (opts.noMythril) {
     reportGate(true, "skipped (--skip mythril)");
@@ -360,7 +360,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
         message: d.message,
       })),
       generatedAt: new Date().toISOString(),
-      generatedBy: `solidscript@${tools.find((t) => t.name === "solidscript")?.version ?? "?"}`,
+      generatedBy: `scriipture@${tools.find((t) => t.name === "scriipture")?.version ?? "?"}`,
     };
     const dir = path.join(auditDir, contract.name);
     fs.mkdirSync(dir, { recursive: true });

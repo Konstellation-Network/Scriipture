@@ -1,6 +1,6 @@
-import type { SolidScriptPlugin } from "../src/plugin/api";
+import type { ScriipturePlugin } from "../src/plugin/api";
 
-const plugin: SolidScriptPlugin = {
+const plugin: ScriipturePlugin = {
   name: "no-future-comments",
   validatorRules: [
     {

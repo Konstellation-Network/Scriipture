@@ -32,7 +32,7 @@ export function renderAuditNotes(input: AuditNotesInput): string {
   sections.push(`- Generated: ${new Date().toISOString()}`);
   sections.push("");
 
-  sections.push("## Auto-injected by SolidScript");
+  sections.push("## Auto-injected by Scriipture");
   sections.push("");
   if (resolution.inheritedContracts.length === 0 && resolution.imports.size === 0) {
     sections.push("_None — this contract uses no decorator-driven imports._");

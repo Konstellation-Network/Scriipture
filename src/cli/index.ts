@@ -28,7 +28,7 @@ try {
   if (cfg.plugins && cfg.plugins.length > 0) await loadPlugins(cfg.plugins);
 } catch { /* config issues are non-fatal at startup */ }
 
-function getSolidscriptVersion(): string {
+function getScriiptureVersion(): string {
   try {
     const here = path.dirname(new URL(import.meta.url).pathname);
     for (const candidate of [
@@ -37,7 +37,7 @@ function getSolidscriptVersion(): string {
     ]) {
       if (!fs.existsSync(candidate)) continue;
       const pkg = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      if (pkg.name === "solidscript" && typeof pkg.version === "string") return pkg.version;
+      if (pkg.name === "scriipture" && typeof pkg.version === "string") return pkg.version;
     }
   } catch { /* fall through */ }
   return "0.0.0";
@@ -45,9 +45,9 @@ function getSolidscriptVersion(): string {
 
 const program = new Command();
 program
-  .name("solidscript")
+  .name("scriipture")
   .description("Write smart contracts in TypeScript. Ship Solidity.")
-  .version(getSolidscriptVersion());
+  .version(getScriiptureVersion());
 
 program
   .command("parse <input>")
@@ -93,7 +93,7 @@ program
   .description("Deploy a compiled artifact (auto-uses browser wallet when no --wallet given; auto-verifies if etherscan-key is configured)")
   .requiredOption("-n, --network <name>", "network: anvil | base-sepolia | base | sepolia | mainnet (or any configured)")
   .option("-a, --args <args...>", "constructor arguments", [])
-  .option("-w, --wallet <name>", "use a named hot wallet from ~/.solidscript/wallets/ (otherwise browser-wallet)")
+  .option("-w, --wallet <name>", "use a named hot wallet from ~/.scriipture/wallets/ (otherwise browser-wallet)")
   .option("--no-browser", "force a hot wallet (requires --wallet) — disables browser fallback")
   .option("--no-verify", "skip auto-verify on Etherscan even when etherscan-key is configured")
   .action(async (contract: string, opts: { network: string; args: string[]; wallet?: string; browser: boolean; verify: boolean }) => {
@@ -122,7 +122,7 @@ program
     });
   });
 
-const cfg = program.command("config").description("Manage user-level config (~/.solidscript/config.json)");
+const cfg = program.command("config").description("Manage user-level config (~/.scriipture/config.json)");
 cfg.command("set <key> <value>")
   .description("Set a config value (e.g. etherscan-key, default-network)")
   .action(configSetCommand);
@@ -137,9 +137,9 @@ cfg.command("unset <key>")
   .description("Remove a config value")
   .action(configUnsetCommand);
 
-const wallet = program.command("wallet").description("Manage local hot wallets (~/.solidscript/wallets/)");
+const wallet = program.command("wallet").description("Manage local hot wallets (~/.scriipture/wallets/)");
 wallet.command("new <name>")
-  .description("Generate a new EVM keypair stored at ~/.solidscript/wallets/<name>.json")
+  .description("Generate a new EVM keypair stored at ~/.scriipture/wallets/<name>.json")
   .action(walletNewCommand);
 wallet.command("show <name>")
   .description("Show wallet address (and private key with --reveal-key)")
@@ -155,7 +155,7 @@ wallet.command("balance <name>")
 
 program
   .command("init [dir]")
-  .description("Scaffold a new SolidScript project (contracts/, config, tsconfig, package.json scripts)")
+  .description("Scaffold a new Scriipture project (contracts/, config, tsconfig, package.json scripts)")
   .action(async (dir: string = ".") => {
     await initCommand(dir);
   });
@@ -163,7 +163,7 @@ program
 program
   .command("doctor")
   .description("Check environment; pass --fix to auto-install missing tools")
-  .option("--fix", "download forge/anvil + pull slither/mythril Docker images to make solidscript fully self-contained")
+  .option("--fix", "download forge/anvil + pull slither/mythril Docker images to make scriipture fully self-contained")
   .action((opts: { fix?: boolean }) => doctorCommand(opts));
 
 program

@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
-  title: SolidScript browser-deploy HTTP API
+  title: Scriipture browser-deploy HTTP API
   description: |
-    Local HTTP server started by `solidscript deploy --browser` to bridge the
+    Local HTTP server started by `scriipture deploy --browser` to bridge the
     CLI to a browser-extension wallet (MetaMask, Rabby, Coinbase Wallet). The
     CLI starts this server on `localhost:7654`, opens a browser tab, and waits
     for the user to sign the deploy transaction in their wallet. The page

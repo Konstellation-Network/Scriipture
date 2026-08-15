@@ -4,7 +4,7 @@ import os from "node:os";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 
-export const WALLET_DIR = path.join(os.homedir(), ".solidscript", "wallets");
+export const WALLET_DIR = path.join(os.homedir(), ".scriipture", "wallets");
 
 export interface WalletRecord {
   name: string;

@@ -1,4 +1,4 @@
-import { storage, view, onlyOwner } from "solidscript";
+import { storage, view, onlyOwner } from "scriipture";
 
 export class Counter {
   @storage count: bigint = 0n;

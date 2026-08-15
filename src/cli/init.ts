@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 
-const STARTER_CONTRACT = `import { storage, view, onlyOwner } from "solidscript";
+const STARTER_CONTRACT = `import { storage, view, onlyOwner } from "scriipture";
 
 /// A minimal owner-gated counter to confirm your toolchain works end-to-end.
 export class Counter {
@@ -25,7 +25,7 @@ export class Counter {
 }
 `;
 
-const STARTER_CONFIG = `/** @type {import("solidscript").Config} */
+const STARTER_CONFIG = `/** @type {import("scriipture").Config} */
 const config = {
   compiler: {
     version: "0.8.20",
@@ -69,11 +69,11 @@ const STARTER_TSCONFIG = `{
 `;
 
 const STARTER_PKG_SCRIPTS = {
-  build: "solidscript build contracts",
-  validate: "solidscript validate contracts",
-  verify: "solidscript verify contracts --skip fuzz,invariants",
-  compile: "solidscript compile out/sol",
-  deploy: "solidscript deploy Counter -n base-sepolia",
+  build: "scriipture build contracts",
+  validate: "scriipture validate contracts",
+  verify: "scriipture verify contracts --skip fuzz,invariants",
+  compile: "scriipture compile out/sol",
+  deploy: "scriipture deploy Counter -n base-sepolia",
 };
 
 export async function initCommand(dir: string): Promise<void> {
@@ -82,7 +82,7 @@ export async function initCommand(dir: string): Promise<void> {
   fs.mkdirSync(path.join(absDir, "contracts"), { recursive: true });
 
   writeIfMissing(path.join(absDir, "contracts", "Counter.ts"), STARTER_CONTRACT);
-  writeIfMissing(path.join(absDir, "solidscript.config.mjs"), STARTER_CONFIG);
+  writeIfMissing(path.join(absDir, "scriipture.config.mjs"), STARTER_CONFIG);
   writeIfMissing(path.join(absDir, ".gitignore"), STARTER_GITIGNORE);
   writeIfMissing(path.join(absDir, "tsconfig.json"), STARTER_TSCONFIG);
 
@@ -91,7 +91,7 @@ export async function initCommand(dir: string): Promise<void> {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
     pkg.scripts = { ...(pkg.scripts ?? {}), ...STARTER_PKG_SCRIPTS };
     fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-    console.log(pc.green(`updated ${pkgPath} — added solidscript scripts`));
+    console.log(pc.green(`updated ${pkgPath} — added scriipture scripts`));
   } else {
     const pkg = {
       name: path.basename(absDir),
@@ -110,11 +110,11 @@ export async function initCommand(dir: string): Promise<void> {
   console.log(pc.bold("Next steps:"));
   console.log(`  cd ${dir === "." ? "<this directory>" : dir}`);
   console.log("  npm install                          # or bun/yarn/pnpm");
-  console.log("  npx solidscript doctor               # check environment");
-  console.log("  npx solidscript build contracts      # transpile → out/sol/");
-  console.log("  npx solidscript deploy Counter -n base-sepolia");
+  console.log("  npx scriipture doctor               # check environment");
+  console.log("  npx scriipture build contracts      # transpile → out/sol/");
+  console.log("  npx scriipture deploy Counter -n base-sepolia");
   console.log("");
-  console.log(pc.dim("For full docs: https://github.com/usezoracle/SolidScript/blob/main/docs/details.md"));
+  console.log(pc.dim("For full docs: https://github.com/usezoracle/Scriipture/blob/main/docs/details.md"));
 }
 
 function writeIfMissing(p: string, content: string): void {

@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in SolidScript isn't working as documented
+description: Something in Scriipture isn't working as documented
 title: "[bug] "
 labels: ["bug", "needs-triage"]
 body:
@@ -10,8 +10,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: SolidScript version
-      description: "Output of `solidscript --version` (e.g. 0.2.1)"
+      label: Scriipture version
+      description: "Output of `scriipture --version` (e.g. 0.2.1)"
       placeholder: "0.2.1"
     validations:
       required: true
@@ -61,7 +61,7 @@ body:
            ```ts
            …
            ```
-        2. Run `solidscript build contracts`
+        2. Run `scriipture build contracts`
         3. Observe error: …
       render: markdown
     validations:
@@ -69,8 +69,8 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: solidscript doctor output
-      description: Paste the output of `solidscript doctor` so we can see your toolchain state.
+      label: scriipture doctor output
+      description: Paste the output of `scriipture doctor` so we can see your toolchain state.
       render: shell
     validations:
       required: false

@@ -1,4 +1,4 @@
-/** @type {import("solidscript").Config} */
+/** @type {import("scriipture").Config} */
 const config = {
   compiler: {
     version: "0.8.20",

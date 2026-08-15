@@ -25,7 +25,7 @@ export async function deployCommand(input: string, opts: DeployOptions): Promise
   const artifactPath = path.join(artifactsDir, `${contractName}.json`);
 
   if (!fs.existsSync(artifactPath)) {
-    console.error(`Artifact not found: ${artifactPath}. Run "solidscript compile" first.`);
+    console.error(`Artifact not found: ${artifactPath}. Run "scriipture compile" first.`);
     process.exit(1);
   }
 
@@ -74,7 +74,7 @@ export async function deployCommand(input: string, opts: DeployOptions): Promise
     const { verifySourceCommand } = await import("./verify-source");
     await verifySourceCommand(contractName, { network: opts.network, address, args });
   } else if (opts.network !== "anvil" && !getEtherscanKey()) {
-    console.log(pc.dim(`(skip verify: set etherscan-key via 'solidscript config set etherscan-key <KEY>')`));
+    console.log(pc.dim(`(skip verify: set etherscan-key via 'scriipture config set etherscan-key <KEY>')`));
   }
 }
 

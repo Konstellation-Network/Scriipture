@@ -44,7 +44,7 @@ export async function auditCommand(input: string, opts: AuditOptions): Promise<v
       slitherFindings = r.diagnostics;
     }
   } else {
-    console.log(pc.yellow("⚠ no .sol files found; run `solidscript build` first to enable slither"));
+    console.log(pc.yellow("⚠ no .sol files found; run `scriipture build` first to enable slither"));
   }
 
   const all = [...native, ...slitherFindings];

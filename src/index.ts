@@ -1,7 +1,7 @@
 /**
- * SolidScript — write smart contracts in TypeScript, ship Solidity.
+ * Scriipture — write smart contracts in TypeScript, ship Solidity.
  *
- * This is the library entry point. CLI users invoke via `solidscript` binary;
+ * This is the library entry point. CLI users invoke via `scriipture` binary;
  * library users import from this module.
  */
 
@@ -47,7 +47,7 @@ export type {
   SourceLocation,
 } from "./ir/types";
 
-export type { SolidScriptPlugin, PluginOptimizerPass, PluginValidatorRule } from "./plugin/api";
+export type { ScriipturePlugin, PluginOptimizerPass, PluginValidatorRule } from "./plugin/api";
 export { setPluginRegistry, getPluginRegistry } from "./plugin/api";
 export { loadPlugins } from "./plugin/loader";
 

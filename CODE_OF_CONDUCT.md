@@ -1,10 +1,10 @@
 # Code of Conduct
 
-SolidScript follows the [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) — please read the full text at that link.
+Scriipture follows the [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) — please read the full text at that link.
 
 ## Summary
 
-We want SolidScript to be a productive, focused, professional space for shipping good software. That means:
+We want Scriipture to be a productive, focused, professional space for shipping good software. That means:
 
 - Be respectful in code review, issue threads, and pull request discussions.
 - Disagree on technical merits, not on the person.
@@ -19,7 +19,7 @@ Project maintainers will review, respond within 7 days, and take action consiste
 
 ## Scope
 
-This Code of Conduct applies to all SolidScript project spaces: the GitHub repository, issue trackers, pull requests, code review comments, and any official communication channels.
+This Code of Conduct applies to all Scriipture project spaces: the GitHub repository, issue trackers, pull requests, code review comments, and any official communication channels.
 
 ## Attribution
 

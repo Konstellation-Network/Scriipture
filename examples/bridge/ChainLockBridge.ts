@@ -15,7 +15,7 @@ import {
   keccak256,
   ecrecover,
   abi,
-} from "solidscript";
+} from "scriipture";
 
 /// ChainLockBridge — a lock-and-release cross-chain bridge.
 /// Trust model: weighted multi-validator quorum (67% by weight).
@@ -236,4 +236,4 @@ export class ChainLockBridge {
   }
 }
 
-declare function payable(a: import("solidscript").CheckedAddress): { transfer(v: bigint): void };
+declare function payable(a: import("scriipture").CheckedAddress): { transfer(v: bigint): void };

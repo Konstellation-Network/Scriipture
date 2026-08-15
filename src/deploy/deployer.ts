@@ -61,7 +61,7 @@ function defaultNetworkFor(name: string): NetworkConfig {
   if (name === "base") {
     return { rpcUrl: "https://mainnet.base.org", chainId: 8453 };
   }
-  throw new Error(`Network "${name}" not configured in solidscript.config.ts and no default known.`);
+  throw new Error(`Network "${name}" not configured in scriipture.config.ts and no default known.`);
 }
 
 function readPrivateKey(net: NetworkConfig): Hex {

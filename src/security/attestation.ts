@@ -45,7 +45,7 @@ export function sha256File(p: string): string {
 
 export function collectToolVersions(): ToolVersion[] {
   const versions: ToolVersion[] = [];
-  versions.push({ name: "solidscript", version: readSolidscriptVersion() });
+  versions.push({ name: "scriipture", version: readScriiptureVersion() });
   for (const tool of ["solc", "slither", "myth", "forge", "anvil", "bun", "node"] as const) {
     const v = probe(tool, "--version");
     if (v) versions.push({ name: tool, version: v });
@@ -59,7 +59,7 @@ function probe(cmd: string, flag: string): string | null {
   return (r.stdout || r.stderr).split("\n")[0]?.trim() ?? null;
 }
 
-function readSolidscriptVersion(): string {
+function readScriiptureVersion(): string {
   try {
     const here = path.dirname(new URL(import.meta.url).pathname);
     const candidates = [
@@ -69,7 +69,7 @@ function readSolidscriptVersion(): string {
     for (const p of candidates) {
       if (!fs.existsSync(p)) continue;
       const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
-      if (pkg.name === "solidscript") return pkg.version ?? "0.0.0";
+      if (pkg.name === "scriipture") return pkg.version ?? "0.0.0";
     }
   } catch { /* fall through */ }
   return "0.0.0";

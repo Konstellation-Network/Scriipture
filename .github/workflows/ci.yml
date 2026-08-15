@@ -83,19 +83,19 @@ jobs:
           npm install "${{ steps.pack.outputs.tarball }}" --silent
 
       - name: doctor sees what's bundled
-        run: cd /tmp/sst-ci && node node_modules/.bin/solidscript doctor
+        run: cd /tmp/sst-ci && node node_modules/.bin/scriipture doctor
 
       - name: init scaffolds a new project
-        run: cd /tmp/sst-ci && node node_modules/.bin/solidscript init .
+        run: cd /tmp/sst-ci && node node_modules/.bin/scriipture init .
 
       - name: build the scaffolded Counter contract
-        run: cd /tmp/sst-ci && node node_modules/.bin/solidscript build contracts
+        run: cd /tmp/sst-ci && node node_modules/.bin/scriipture build contracts
 
       - name: validate
-        run: cd /tmp/sst-ci && node node_modules/.bin/solidscript validate contracts
+        run: cd /tmp/sst-ci && node node_modules/.bin/scriipture validate contracts
 
       - name: compile to bytecode
-        run: cd /tmp/sst-ci && node node_modules/.bin/solidscript compile out/sol
+        run: cd /tmp/sst-ci && node node_modules/.bin/scriipture compile out/sol
 
       - name: assert deployable artifact exists
         run: |
@@ -108,7 +108,7 @@ jobs:
       - name: upload tarball as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: solidscript-tarball
+          name: scriipture-tarball
           path: ${{ steps.pack.outputs.tarball }}
           retention-days: 14
 

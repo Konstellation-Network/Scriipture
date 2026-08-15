@@ -1,5 +1,5 @@
-declare module "solidscript/standards" {
-  import type { Address } from "solidscript";
+declare module "scriipture/standards" {
+  import type { Address } from "scriipture";
 
   export class ERC20 {
     constructor(name: string, symbol: string);
