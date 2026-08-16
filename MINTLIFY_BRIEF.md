@@ -8,9 +8,12 @@
 
 ## Context: what Scriipture is
 
-Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to any EVM chain. Source-of-truth is at https://github.com/Worldstreet-Web-Services/scripture (MIT, public).
+Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to an EVM network. Source-of-truth is at https://github.com/Worldstreet-Web-Services/scripture (MIT licensed).
 
-Already shipped as an npm package: `npm install scriipture`. We need a docs site for it.
+**Two things to know before you start:**
+
+- **That repo is private.** You'll need to be added as a collaborator to read the source files listed below. Ask the maintainer for access first — nothing here works without it.
+- **The package is not on npm yet.** `npm install scriipture` will 404 until the first release ships. The name is registered to us and unclaimed, but write install instructions against `scriipture@0.1.0` and expect to verify them only after publish. Don't let a docs deploy go live promising an install that doesn't resolve yet.
 
 ## Goal
 
@@ -31,11 +34,27 @@ The maintainer is sharing the following from the Scriipture repo (paths preserve
 - `README.md` — short README from the repo (install + 60-second quickstart). Source for the "Introduction" and "Quickstart" pages.
 - `LANDING.md` — marketing-page content blocks. **This is not docs.** Meant for hero/section blocks on the marketing homepage. Mentioned here so you don't accidentally put it in the docs site.
 - `CHANGELOG.md` — release history in Keep-a-Changelog format. Source for a "Changelog" page (optional).
-- `examples/*/` — eight example contracts in TypeScript. Source code samples to embed throughout the docs. Use Mintlify's `<CodeGroup>` to show TS + generated Solidity side-by-side where useful.
+- `examples/*/` — nine example contracts in TypeScript (`counter`, `erc20-token`, `vault`, `yield-vault`, `staking`, `bridge`, `asm-add`, `with-todo`, and `buggy`). Source code samples to embed throughout the docs. Use Mintlify's `<CodeGroup>` to show TS + generated Solidity side-by-side where useful. Note that `buggy` exists to *fail* the security pipeline — it's ideal for the security-pipeline page, but don't present it as a model contract.
 - `types/` — TypeScript ambient definitions. Source for the "Library API" reference page.
 - `package.json` — current version, license, entry points.
 
 `docs/openapi.yaml` exists in the source repo as an internal spec for the local browser-deploy bridge (a `localhost:7654` HTTP server the CLI spawns for ~30 seconds during a wallet-signed deploy). **It is not user-facing API material.** Do not include it in the Mintlify site.
+
+## Accuracy notes — read before writing a single page
+
+Some source material overstates what ships today. These were verified against the CLI on 2026-08-16 at v0.1.0. Docs that promise them will generate support tickets.
+
+**Networks: five, not "any EVM chain."** `deploy` accepts exactly `base`, `base-sepolia`, `mainnet`, `sepolia`, and `anvil`. Anything else exits with `Unknown network`. This is hardcoded in `src/deploy/networks.ts`.
+
+**A custom network in the config file does not work.** `scriipture.config.mjs` has a `networks` block, and it is genuinely used for RPC URL and private-key env overrides — but `src/deploy/deployer.ts` still calls `resolveChain(network)` against the hardcoded list, so a config entry for an unsupported chain throws anyway. Do **not** write a "how to add a new chain" guide; there is no supported path today. That's why the structure above renames `concepts/multi-chain` to `concepts/networks`.
+
+**Older marketing copy is wrong on this point.** Earlier drafts of `LANDING.md` listed Optimism, Arbitrum, Polygon, zkSync, Linea, and Scroll. That has been corrected upstream — if you find those names in any source file, treat it as stale, not as a spec.
+
+**Mythril (gate 4) is opt-in.** It only runs with `--deep`. A plain `scriipture verify` does not invoke it. Say so on the security-pipeline page.
+
+**`docs/api/` is generated, not committed.** Run `bun run docs:typedoc` to produce it. Don't link to it as though it exists in the repo.
+
+When in doubt, run the command. `npx scriipture <cmd> --help` is the authority, and `docs/cli-commands.yaml` is generated from the CLI itself, so it's more trustworthy than prose.
 
 ## Proposed site structure
 
@@ -50,12 +69,14 @@ docs/
 │  ├─ type-mapping       (bigint → uint256, Address, Map, etc.)
 │  ├─ security-pipeline  (the 9 gates, what each catches, install hints)
 │  ├─ browser-wallet     (how --browser deploy works under the hood)
-│  └─ multi-chain        (supported chains + how to add new ones)
+│  └─ networks           (the five supported networks — see accuracy note below)
 │
 ├─ commands/             (one MDX page per subcommand)
 │  ├─ doctor
 │  ├─ init
+│  ├─ parse
 │  ├─ build
+│  ├─ optimize
 │  ├─ validate
 │  ├─ verify
 │  ├─ compile
@@ -176,7 +197,7 @@ Mintlify's nav config. Skeleton:
               "concepts/type-mapping",
               "concepts/security-pipeline",
               "concepts/browser-wallet",
-              "concepts/multi-chain"
+              "concepts/networks"
             ]
           },
           {
@@ -184,7 +205,9 @@ Mintlify's nav config. Skeleton:
             "pages": [
               "commands/doctor",
               "commands/init",
+              "commands/parse",
               "commands/build",
+              "commands/optimize",
               "commands/validate",
               "commands/verify",
               "commands/compile",
@@ -324,4 +347,6 @@ When you start work, get these answered:
 2. **Brand colors + logo file** — need the exact hex values and SVG logo from whoever owns design.
 3. **Sync cadence** — manual or scripted; weekly cron or per-release.
 4. **Mintlify plan tier** — free works for most projects but custom domains and analytics often require paid; check what's needed.
-5. **Versioned docs?** — if Scriipture ships breaking changes between minor versions, you might need versioned docs (`/v0.2/`, `/v0.3/`). For now, latest-only is fine.
+5. **Versioned docs?** — Scriipture is at `0.1.0` and pre-1.0, so breaking changes between minors are likely. Latest-only is fine to start; revisit if `0.2.0` breaks the contract-authoring API.
+6. **Repo access** — who on the docs side gets added to the private `Worldstreet-Web-Services/scripture` repo, and does the Mintlify GitHub app need read access to it for any sync automation?
+7. **Publish timing** — docs promising `npm install scriipture` shouldn't go live before the package does. Confirm the release date so the two land together.

@@ -1,117 +1,224 @@
 # Scriipture
 
-> **Write smart contracts in TypeScript. Ship audited Solidity.**
+**Write smart contracts in TypeScript. Ship auditable Solidity.**
+
+[![npm](https://img.shields.io/npm/v/scriipture.svg)](https://www.npmjs.com/package/scriipture)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
+
+You already know TypeScript. Scriipture turns it into Solidity a human can read and an auditor can sign off on — then refuses to deploy until nine security gates pass.
+
+```bash
+npm install scriipture
+```
+
+---
+
+## What you write, and what actually ships
+
+**Your TypeScript:**
 
 ```ts
-import { Address, onlyOwner, msg } from "scriipture";
-import { ERC20 } from "scriipture/standards";
+import { storage, view, onlyOwner } from "scriipture";
 
-export class MyToken extends ERC20 {
-  constructor(initialSupply: bigint) {
-    super("MyToken", "MTK");
-    this._mint(msg.sender, initialSupply);
-  }
+export class Counter {
+  @storage count: bigint = 0n;
 
   @onlyOwner
-  mint(to: Address, amount: bigint): void {
-    this._mint(to, amount);
+  increment(): void {
+    require(this.count < 1000000n, "Max reached");
+    this.count = this.count + 1n;
+  }
+
+  @view
+  current(): bigint {
+    return this.count;
   }
 }
 ```
 
-→ deployed on Base Sepolia with source verified on BaseScan, in three commands.
+**The Solidity Scriipture emits:**
 
-## Install — one command, then one fix
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
 
-```bash
-npm install scriipture        # or bun add / yarn add / pnpm add
-npx scriipture doctor --fix   # ONE-TIME: downloads forge/anvil + pulls slither/mythril Docker images
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract Counter is Ownable {
+    error MaxReached();
+
+    uint256 public count;
+
+    constructor() Ownable(msg.sender) {}
+
+    function increment() public onlyOwner {
+        if (!(count < 1000000)) {
+            revert MaxReached();
+        }
+        count = count + 1;
+    }
+
+    function current() public view returns (uint256) {
+        return count;
+    }
+}
 ```
 
-That's it. After `doctor --fix` you have a self-contained toolchain — solc, forge, anvil, slither, mythril all resolved automatically. No `brew`, no `pipx`, no `foundryup`.
+That output is real, not illustrative — it's what `scriipture build` produces from the file above. Along the way it inferred the `Ownable` base and injected `Ownable(msg.sender)`, rewrote the string `require` into a custom error (~50 gas cheaper per revert, smaller bytecode), and dropped the redundant `= 0` initializer.
 
-### What's bundled vs auto-fetched
+**You ship Solidity, not a black box.** The `.sol` is the artifact. Read it, diff it, hand it to an auditor.
 
-| Tool | Where it comes from |
-|---|---|
-| solc (JS) | bundled in the npm install — works immediately |
-| @openzeppelin/contracts | bundled as a regular dependency |
-| TypeScript parser, viem, etc | bundled |
-| **forge + anvil** | auto-downloaded to `~/.scriipture/bin/` on first use (or by `doctor --fix`). Pulled from Foundry's official GitHub release for your platform. |
-| **slither** | runs via Docker (`trailofbits/eth-security-toolbox`) if Docker is installed; falls back to native `slither` on PATH; fails with install hint otherwise |
-| **mythril** | runs via Docker (`mythril/myth`) if Docker is installed; falls back to native `myth` on PATH |
+---
 
-If you don't have Docker, install it once (`brew install --cask docker`) — it removes the need to ever touch Python for Slither/Mythril.
-
-## 60-second quickstart
+## Quickstart
 
 ```bash
-mkdir my-token && cd my-token
-npm init -y
 npm install scriipture
+npx scriipture doctor --fix
+npx scriipture init my-token && cd my-token
+```
 
-npx scriipture doctor --fix                      # fetches forge/anvil, pulls Slither+Mythril Docker images
-npx scriipture init                              # scaffold contracts/ + config
+`doctor --fix` is a one-time setup that fetches the toolchain — Foundry binaries, and Slither/Mythril Docker images. solc and OpenZeppelin v5 are already bundled in the npm install, so a plain `build` works with no setup at all.
 
-# write your contract in contracts/Counter.ts
-npx scriipture build contracts                   # TS → Solidity
-npx scriipture verify contracts --skip fuzz      # 9-gate security pipeline
-npx scriipture compile out/sol                   # ABI + bytecode
+Then the loop:
 
-# deploy via your browser wallet (no keys on disk)
+```bash
+npx scriipture build contracts      # TypeScript → Solidity
+npx scriipture verify contracts     # 9-gate security pipeline
+npx scriipture compile out/sol      # → ABI + bytecode
 npx scriipture deploy Counter -n base-sepolia
 ```
 
-## What makes this different
+The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up, you sign, and the contract goes live — **no private key ever touches disk.**
 
-- **9-gate security pipeline gates every deploy** — native validator (secure mode), solc, SMTChecker (Z3), Slither, pattern library, auto-generated fuzz harnesses, auto-derived invariant tests, reproducible-build attestation
-- **Browser-wallet signing first-class** — no private keys on disk; MetaMask/Rabby/Coinbase Wallet handles the signature
-- **Auto-verify on every Etherscan-family explorer** — Base, Optimism, Arbitrum, Polygon, Eth, every testnet — one API key via Etherscan v2 multichain
-- **OpenZeppelin v5 + 13 optimizer passes built in** — custom errors auto-derived, `Ownable(msg.sender)` auto-injected, immutables auto-detected
-- **Source maps from `.sol` back to `.ts`** — forge stack traces rewrite to your TypeScript line numbers via `scriipture trace`
+---
 
-## Documentation
+## Why Scriipture
 
-- **[docs/details.md](./docs/details.md)** — full user guide (14 sections, written for non-Solidity devs)
-- **[docs/cli-commands.yaml](./docs/cli-commands.yaml)** — every command and flag, machine-readable
-- **[docs/openapi.yaml](./docs/openapi.yaml)** — OpenAPI 3.0 spec for the browser-deploy HTTP surface
-- **[docs/api/](./docs/api/)** — TypeDoc reference for the library API (generated via `bun run docs:typedoc`)
+**No Solidity required.** Write in the language and types you already use. What comes out the other side is readable Solidity, not bytecode.
 
-## Commands at a glance
+**Nine verifiers gate every deploy.** `secure-deploy` refuses to ship unless all of them pass. Security is the default, not a plugin you remember to install.
 
-| Command | What it does |
+**Private keys stay off disk.** The CLI opens a local bridge and you sign in your browser wallet, exactly like any web app. Local hot wallets are available when you want them, but they're opt-in.
+
+**One `npm install`.** No Python, no Rust, no `foundryup`. OpenZeppelin v5 and solc ship with the package; everything else is lazy-fetched on first use.
+
+**Stack traces point at your TypeScript.** When forge throws, `scriipture trace` rewrites every `.sol:line` back to the `.ts:line` it came from.
+
+**Nothing phones home.** Zero telemetry, zero analytics. The CLI runs entirely on your machine.
+
+---
+
+## The 9-gate pipeline
+
+`scriipture verify` runs these in order. Any failure blocks the deploy.
+
+| # | Gate | Catches |
+|---|---|---|
+| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 15 rules |
+| 2 | solc | syntax and type errors |
+| 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — Z3-backed proofs |
+| 4 | Mythril | symbolic execution (opt-in via `--deep`) |
+| 5 | Slither | 70+ vulnerability detectors |
+| 6 | Pattern library | only known-safe OpenZeppelin v5 and forge-std imports allowed |
+| 7 | Fuzz harnesses | auto-generated, 1000 random inputs per public method |
+| 8 | Invariant tests | `@invariant` decorators → forge invariant runs across random state transitions |
+| 9 | Attestation | reproducible-build manifest pinned to every tool version |
+
+Skip individual gates while iterating with `--skip fuzz,invariants`.
+
+---
+
+## Networks
+
+```bash
+scriipture deploy MyToken -n base-sepolia
+```
+
+| Network | Flag |
 |---|---|
-| `scriipture doctor` | Check your environment (node, solc, slither, forge, OZ) |
-| `scriipture init [dir]` | Scaffold a new project (contracts/, config, scripts) |
-| `scriipture build <input>` | Transpile TS → Solidity (optimizer on by default) |
-| `scriipture validate <input>` | Static checks (15 native rules) |
-| `scriipture verify <input>` | Full 9-gate security pipeline |
-| `scriipture compile <input>` | solc compile → ABI + bytecode |
-| `scriipture deploy <Contract> -n <network>` | Deploy (browser wallet by default, auto-verifies on Etherscan if key configured) |
-| `scriipture secure-deploy <input> -c <Contract> -n <network>` | Refuse to deploy unless 9 gates pass |
-| `scriipture verify-source <Contract> -n <network>` | Submit source to Etherscan v2 multichain |
-| `scriipture audit <input>` | Native rules + Slither |
-| `scriipture audit-pack <input>` | Per-contract bundle for auditor handoff |
-| `scriipture gasdiff <input>` | Bytecode size: unoptimized vs optimized |
-| `scriipture test` | Forge tests + auto-generated fuzz |
-| `scriipture trace` | Rewrite `.sol:line` → `.ts:line` in stack traces |
+| Base | `base` |
+| Base Sepolia | `base-sepolia` |
+| Ethereum | `mainnet` |
+| Sepolia | `sepolia` |
+| Local Anvil | `anvil` |
 
-## Library API
+Deployed contracts auto-verify on the matching Etherscan-family explorer when an API key is configured.
+
+> More EVM chains are on the roadmap. Today these five are what `deploy` accepts — anything else exits with `Unknown network`.
+
+---
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `doctor [--fix]` | Check the environment; `--fix` installs what's missing |
+| `init [dir]` | Scaffold a project — contracts, config, tsconfig, scripts |
+| `build <input>` | Transpile TypeScript → Solidity (optimizer on by default) |
+| `validate <input>` | Static checks, 15 native rules |
+| `verify <input>` | The full 9-gate pipeline |
+| `compile <input>` | solc → ABI + bytecode |
+| `deploy <Contract> -n <net>` | Deploy via browser wallet, auto-verify source |
+| `secure-deploy <input>` | Deploy only if all 9 gates pass |
+| `audit <input>` | Native rules + Slither |
+| `audit-pack <input>` | Per-contract bundle for auditor handoff |
+| `gasdiff <input>` | Bytecode size, unoptimized vs optimized |
+| `test` | Forge tests plus generated fuzz |
+| `trace` | Rewrite `.sol:line` → `.ts:line` in stack traces |
+
+Full flags for every command: [docs/cli-commands.yaml](./docs/cli-commands.yaml).
+
+---
+
+## Use it as a library
+
+The compiler is a normal TypeScript module — the CLI is just one consumer.
 
 ```ts
 import {
   parseContractFiles,
-  emitProgram,
-  validateProgram,
   optimizeProgram,
-  compileSolidity,
+  emitProgram,
 } from "scriipture";
 
 const { program } = parseContractFiles(["./contracts/MyToken.ts"]);
 optimizeProgram(program);
-const emitted = emitProgram(program);
-console.log(emitted[0].solidity);
+const [{ solidity }] = emitProgram(program);
+console.log(solidity);
 ```
+
+---
+
+<details>
+<summary><strong>What's bundled vs fetched on demand</strong></summary>
+
+| Tool | Where it comes from |
+|---|---|
+| solc (JS) | bundled — works immediately |
+| @openzeppelin/contracts | bundled as a regular dependency |
+| TypeScript parser, viem | bundled |
+| forge + anvil | auto-downloaded on first use, or by `doctor --fix`, from Foundry's official release for your platform |
+| Slither | Docker (`trailofbits/eth-security-toolbox`), falling back to a native `slither` on PATH |
+| Mythril | Docker (`mythril/myth`), falling back to a native `myth` on PATH |
+
+Docker is the smoothest path for Slither and Mythril — it means never touching Python. Without it, both fall back to binaries on your PATH.
+
+</details>
+
+---
+
+## Documentation
+
+- **[docs/details.md](./docs/details.md)** — the full user guide, written for developers who have never shipped Solidity
+- **[docs/cli-commands.yaml](./docs/cli-commands.yaml)** — every command and flag, machine-readable
+- **[docs/openapi.yaml](./docs/openapi.yaml)** — OpenAPI spec for the browser-deploy surface
+- **TypeDoc reference** for the library API — generate it locally with `bun run docs:typedoc`
+
+## Contributing
+
+Issues and pull requests welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through [SECURITY.md](./SECURITY.md).
 
 ## License
 

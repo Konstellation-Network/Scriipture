@@ -65,7 +65,7 @@ A browser tab opens. MetaMask pops up. You sign. The contract is live + auto-ver
 
 **One npm install, no Python, no Rust, no Foundryup.** OpenZeppelin v5 is bundled. `doctor --fix` lazy-fetches Foundry binaries and pulls Slither/Mythril Docker images on first use.
 
-**Auto-verify on every chain Etherscan supports.** One API key for Base, Optimism, Arbitrum, Polygon, ZkSync, Ethereum mainnet, and every testnet.
+**Auto-verify on deploy.** One Etherscan v2 API key covers every network Scriipture deploys to — Base, Ethereum, and their testnets. Source lands verified on the explorer without a second command.
 
 **Source maps back to your TypeScript.** When forge throws a stack trace, `scriipture trace` rewrites every `.sol:line` to the originating `.ts:line`.
 
@@ -149,17 +149,19 @@ Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 
 ---
 
-## Multi-chain, one toolchain
+## One toolchain, every supported network
 
-Deploy to any EVM chain. The CLI's `--chain`/`--network` flag does the rest.
+Same command, same flow, whichever network you target.
 
-`anvil` · `base` · `base-sepolia` · `sepolia` · `mainnet` · `optimism` · `arbitrum` · `polygon` · `zksync` · `linea` · `scroll` · `+ any viem-supported chain`
+`base` · `base-sepolia` · `mainnet` · `sepolia` · `anvil`
 
 ```bash
 scriipture deploy MyToken -n base                # Base mainnet
-scriipture deploy MyToken -n optimism            # Optimism
 scriipture deploy MyToken -n base-sepolia        # Base testnet
+scriipture deploy MyToken -n anvil               # local
 ```
+
+Deployed contracts auto-verify on the matching Etherscan-family explorer when an API key is configured. More EVM networks are on the roadmap — anything outside the list above currently exits with `Unknown network`.
 
 ---
 
@@ -171,9 +173,8 @@ scriipture deploy MyToken -n base-sepolia        # Base testnet
 | Static analysis | opt-in | plugin | bring your own | **gated by default** |
 | Auto-fuzz harnesses | n/a | manual | manual | **auto-generated** |
 | Deploy auth | private key | private key | private key | **browser wallet first-class** |
-| Source verification | manual | plugin | plugin | **auto on every deploy** |
+| Source verification | manual | plugin | plugin | **automatic on every deploy** |
 | Reproducible-build manifest | n/a | n/a | partial | **per-contract attestation** |
-| Cross-chain | per-chain config | per-chain | per-chain | **one Etherscan key, every chain** |
 
 ---
 
