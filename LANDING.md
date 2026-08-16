@@ -29,7 +29,7 @@ export class MyToken extends ERC20 {
 ```
 
 **Primary CTA:** `Get started` → `/docs`
-**Secondary CTA:** `View on GitHub` → `https://github.com/usezoracle/Scriipture`
+**Secondary CTA:** `View on GitHub` → `https://github.com/Worldstreet-Web-Services/scripture`
 
 ---
 
@@ -216,14 +216,13 @@ console.log(solidity);
 npm install scriipture
 ```
 
-`Get started` → `/docs` · `Star on GitHub` → `https://github.com/usezoracle/Scriipture` · `Read the docs` → `/docs/details`
+`Get started` → `/docs` · `Star on GitHub` → `https://github.com/Worldstreet-Web-Services/scripture` · `Read the docs` → `/docs/details`
 
 ---
 
 ## Footer
 
-- **GitHub** — github.com/usezoracle/Scriipture
+- **GitHub** — github.com/Worldstreet-Web-Services/scripture
 - **npm** — npmjs.com/package/scriipture
 - **Docs** — full reference in [docs/details.md](./docs/details.md)
 - **License** — MIT
-- **Contact** — labs@zoracle.xyz

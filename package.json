@@ -2,10 +2,9 @@
   "name": "scriipture",
   "version": "0.1.0",
   "description": "Write smart contracts in TypeScript. Ship audited Solidity. Multi-chain deploy with a built-in 9-gate security pipeline.",
-  "author": "Zoracle <labs@zoracle.xyz>",
-  "homepage": "https://github.com/usezoracle/Scriipture#readme",
+  "homepage": "https://github.com/Worldstreet-Web-Services/scripture#readme",
   "bugs": {
-    "url": "https://github.com/usezoracle/Scriipture/issues"
+    "url": "https://github.com/Worldstreet-Web-Services/scripture/issues"
   },
   "type": "module",
   "main": "dist/index.js",
@@ -77,7 +76,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/usezoracle/Scriipture.git"
+    "url": "git+https://github.com/Worldstreet-Web-Services/scripture.git"
   },
   "license": "MIT",
   "publishConfig": {

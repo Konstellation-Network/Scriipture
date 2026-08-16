@@ -8,7 +8,7 @@
 
 ## Context: what Scriipture is
 
-Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to any EVM chain. Source-of-truth is at https://github.com/usezoracle/Scriipture (MIT, public).
+Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to any EVM chain. Source-of-truth is at https://github.com/Worldstreet-Web-Services/scripture (MIT, public).
 
 Already shipped as an npm package: `npm install scriipture`. We need a docs site for it.
 
@@ -223,7 +223,7 @@ Mintlify's nav config. Skeleton:
   },
   "navbar": {
     "links": [
-      { "label": "GitHub", "href": "https://github.com/usezoracle/Scriipture" },
+      { "label": "GitHub", "href": "https://github.com/Worldstreet-Web-Services/scripture" },
       { "label": "npm",    "href": "https://npmjs.com/package/scriipture" }
     ],
     "primary": {
@@ -234,13 +234,15 @@ Mintlify's nav config. Skeleton:
   },
   "footer": {
     "socials": {
-      "github":  "https://github.com/usezoracle/Scriipture",
-      "x":       "https://x.com/usezoracle",
-      "website": "https://usezoracle.com"
+      "github":  "https://github.com/Worldstreet-Web-Services/scripture"
     }
   }
 }
 ```
+
+> **TODO:** add `"x"` and `"website"` to `footer.socials` once Worldstreet's handles are
+> confirmed. This block previously carried Zoracle's X and website URLs — they were removed
+> in the handover and must not be restored.
 
 Customize colors / logo / X handle to match the existing marketing site brand.
 
@@ -267,7 +269,7 @@ Two paths:
 1. Sign up at https://mintlify.com
 2. Install the Mintlify GitHub app on this landing page repo
 3. In the Mintlify dashboard, point at the `docs/` subfolder
-4. Configure custom domain (e.g. `docs.usezoracle.com` or `docs.scriipture.dev`)
+4. Configure custom domain (domain TBD — Worldstreet has not picked one yet)
 5. Every push to `main` triggers a build; preview deployments per PR
 
 **Path B — Self-host:**
@@ -283,13 +285,13 @@ Once the docs are live, add a `Docs` link to the landing page navigation bar poi
 
 ## Keeping docs in sync with Scriipture
 
-Scriipture ships from its own repo (`usezoracle/Scriipture`). When the maintainer adds features there, the docs in this repo need to follow. Two approaches:
+Scriipture ships from its own repo (`Worldstreet-Web-Services/scripture`). When the maintainer adds features there, the docs in this repo need to follow. Two approaches:
 
 **Option A — Manual sync:**
 On each Scriipture release, the maintainer opens a PR here to update the relevant MDX pages. Slow but lets you tightly curate docs.
 
 **Option B — Scripted sync:**
-A small `npm run sync-docs` script fetches the latest `docs/details.md`, `openapi.yaml`, `cli-commands.yaml` from `usezoracle/Scriipture`, diffs against the local MDX files, and surfaces what's changed. Faster, but you still need a human to review and split into MDX.
+A small `npm run sync-docs` script fetches the latest `docs/details.md`, `openapi.yaml`, `cli-commands.yaml` from `Worldstreet-Web-Services/scripture`, diffs against the local MDX files, and surfaces what's changed. Faster, but you still need a human to review and split into MDX.
 
 Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream content has drifted.
 
@@ -300,7 +302,7 @@ Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream
 - **Every page should have at least one code block** in the first 200 words.
 - **Use `<CodeGroup>` for TS↔Sol comparisons** wherever the magic is in what Scriipture auto-generates.
 - **Use `<Note>` for tips, `<Warning>` for footguns, `<Info>` for context.** Don't overuse — they lose force.
-- **Link liberally to the Scriipture GitHub** for source-of-truth on specific functions (`https://github.com/usezoracle/Scriipture/blob/main/src/...`).
+- **Link liberally to the Scriipture GitHub** for source-of-truth on specific functions (`https://github.com/Worldstreet-Web-Services/scripture/blob/main/src/...`).
 - **Don't paste the full security-pipeline gate list on every page.** Link to `/concepts/security-pipeline` and let that be the canonical reference.
 
 ## Deliverables when you're done
@@ -318,7 +320,7 @@ Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream
 
 When you start work, get these answered:
 
-1. **Subdomain or subpath?** `docs.usezoracle.com` (Mintlify hosted) vs `usezoracle.com/docs` (self-hosted under the marketing site).
+1. **Which domain, and subdomain or subpath?** Worldstreet has not picked a marketing domain yet — that decision comes first, then `docs.<domain>` (Mintlify hosted) vs `<domain>/docs` (self-hosted under the marketing site).
 2. **Brand colors + logo file** — need the exact hex values and SVG logo from whoever owns design.
 3. **Sync cadence** — manual or scripted; weekly cron or per-release.
 4. **Mintlify plan tier** — free works for most projects but custom domains and analytics often require paid; check what's needed.

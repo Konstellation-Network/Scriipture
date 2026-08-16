@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import path from "node:path";
 import { Command } from "commander";
 import { parseCommand } from "./parse";
 import { buildCommand } from "./build";
@@ -22,32 +20,24 @@ import { configSetCommand, configGetCommand, configListCommand, configUnsetComma
 import { doctorCommand } from "./doctor";
 import { loadConfig } from "../config/load";
 import { loadPlugins } from "../plugin/loader";
+import { getScriiptureVersion } from "./version";
+import { bannerText } from "./banner";
 
 try {
   const cfg = await loadConfig();
   if (cfg.plugins && cfg.plugins.length > 0) await loadPlugins(cfg.plugins);
 } catch { /* config issues are non-fatal at startup */ }
 
-function getScriiptureVersion(): string {
-  try {
-    const here = path.dirname(new URL(import.meta.url).pathname);
-    for (const candidate of [
-      path.resolve(here, "..", "..", "package.json"),
-      path.resolve(here, "..", "package.json"),
-    ]) {
-      if (!fs.existsSync(candidate)) continue;
-      const pkg = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      if (pkg.name === "scriipture" && typeof pkg.version === "string") return pkg.version;
-    }
-  } catch { /* fall through */ }
-  return "0.0.0";
-}
-
 const program = new Command();
 program
   .name("scriipture")
   .description("Write smart contracts in TypeScript. Ship Solidity.")
-  .version(getScriiptureVersion());
+  .version(getScriiptureVersion() ?? "0.0.0");
+
+// Shown above the help screen — i.e. on `scriipture` with no args and on
+// `--help`, the two moments someone is looking at the tool rather than using it.
+// Suppressed for piped output and narrow terminals; see ./banner.
+program.addHelpText("beforeAll", () => bannerText());
 
 program
   .command("parse <input>")

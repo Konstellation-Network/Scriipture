@@ -20,7 +20,7 @@ Recommended (for the full test loop):
 - Docker (alternative to brewing slither/mythril) — pulls `trailofbits/eth-security-toolbox` and `mythril/myth` images
 
 ```bash
-git clone https://github.com/usezoracle/Scriipture.git
+git clone https://github.com/Worldstreet-Web-Services/scripture.git
 cd Scriipture
 bun install
 bun run typecheck
@@ -135,7 +135,7 @@ Adding tests for a new validator rule: one contract under `tests/contracts/` tha
 
 ## Reporting issues / security
 
-- **Bugs and feature requests**: use the GitHub issue templates at https://github.com/usezoracle/Scriipture/issues/new/choose
+- **Bugs and feature requests**: use the GitHub issue templates at https://github.com/Worldstreet-Web-Services/scripture/issues/new/choose
 - **Security vulnerabilities**: see [SECURITY.md](./SECURITY.md). Please don't open a public issue for security reports.
 
 ---
