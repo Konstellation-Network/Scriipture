@@ -2,6 +2,7 @@ import pc from "picocolors";
 import { createPublicClient, http, formatEther } from "viem";
 import { createWallet, listWallets, loadWallet, walletPath } from "../wallet/store";
 import { resolveChain } from "../deploy/networks";
+import { loadConfig } from "../config/load";
 
 export async function walletNewCommand(name: string): Promise<void> {
   try {
@@ -56,7 +57,8 @@ export async function walletListCommand(): Promise<void> {
 
 export async function walletBalanceCommand(name: string, opts: { network: string }): Promise<void> {
   const w = loadWallet(name);
-  const chain = resolveChain(opts.network) as any;
+  const { networks } = await loadConfig();
+  const chain = resolveChain(opts.network, networks) as any;
   const rpc = chain?.rpcUrls?.default?.http?.[0];
   if (!rpc) {
     console.error(pc.red(`no RPC URL for network "${opts.network}"`));

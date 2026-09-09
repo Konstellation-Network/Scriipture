@@ -18,6 +18,15 @@ const config = {
       rpcUrl: "https://mainnet.base.org",
       chainId: 8453,
     },
+    // Networks that aren't built in work too -- rpcUrl and chainId are all
+    // that's required. nativeCurrency and blockExplorerUrl are optional.
+    // myChain: {
+    //   rpcUrl: "https://rpc.my-chain.example",
+    //   chainId: 424242,
+    //   nativeCurrency: { name: "My Token", symbol: "MYT", decimals: 18 },
+    //   blockExplorerUrl: "https://explorer.my-chain.example",
+    //   privateKeyEnv: "MYCHAIN_PRIVATE_KEY",
+    // },
   },
   outDir: "out",
   plugins: [],
