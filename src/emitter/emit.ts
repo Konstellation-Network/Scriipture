@@ -151,8 +151,9 @@ function emitError(err: IRErrorDecl): string[] {
 }
 
 function emitEvent(ev: IREventDecl): string[] {
+  // Event parameters take no data location.
   const params = ev.params
-    .map((p) => `${solidityType(p.type, "memory")}${p.indexed ? " indexed" : ""} ${p.name}`)
+    .map((p) => `${solidityType(p.type)}${p.indexed ? " indexed" : ""} ${p.name}`)
     .join(", ");
   return [`    event ${ev.name}(${params});`];
 }

@@ -91,6 +91,7 @@ export function validateContract(contract: IRContract, opts: ValidateOptions = {
   }
 
   out.push(...ruleReservedIdentifiers(contract));
+  out.push(...ruleEventDeclarations(contract));
 
   for (const plugin of getPluginValidatorRules()) {
     for (const d of plugin.run(contract)) {
@@ -142,6 +143,45 @@ function ruleReservedIdentifiers(contract: IRContract): Diagnostic[] {
     walkStatements(fn.body, (stmt) => {
       if (stmt.kind === "let" && isSolidityReserved(stmt.name)) {
         out.push(reservedDiagnostic(stmt.name, `local variable "${stmt.name}"`, stmt.loc ?? fn.loc));
+      }
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Solidity allows at most 3 indexed parameters on a non-anonymous event, and
+ * `emit` of a name that was never declared cannot compile. Both are caught here
+ * so they report against the .ts source rather than generated Solidity.
+ */
+function ruleEventDeclarations(contract: IRContract): Diagnostic[] {
+  const out: Diagnostic[] = [];
+
+  for (const ev of contract.events) {
+    const indexed = ev.params.filter((p) => p.indexed);
+    if (indexed.length > 3) {
+      out.push({
+        rule: "event-too-many-indexed",
+        severity: "error",
+        message: `event "${ev.name}" has ${indexed.length} indexed parameters; Solidity allows at most 3`,
+        loc: ev.loc,
+        fix: `drop Indexed<> from ${indexed.slice(3).map((p) => `"${p.name}"`).join(", ")}`,
+      });
+    }
+  }
+
+  const declared = new Set(contract.events.map((e) => e.name));
+  for (const fn of contract.functions) {
+    walkStatements(fn.body, (stmt) => {
+      if (stmt.kind === "emit" && !declared.has(stmt.eventName)) {
+        out.push({
+          rule: "undeclared-event",
+          severity: "error",
+          message: `"${stmt.eventName}" is emitted but never declared`,
+          loc: stmt.loc ?? fn.loc,
+          fix: `declare it: @event ${stmt.eventName}(...): void {}`,
+        });
       }
     });
   }
@@ -346,11 +386,11 @@ function ruleStateMutationWithoutEvent(contract: IRContract, fn: IRFunction): Di
   let mutates = false;
   let emits = false;
   walkStatements(fn.body, (stmt) => {
+    // `emit(...)` is parsed into a dedicated emit statement, not a call.
+    if (stmt.kind === "emit") emits = true;
     if (stmt.kind === "expression") {
       if (stmt.expr.kind === "assign" && stmt.expr.left.kind === "member" &&
           stmt.expr.left.object.kind === "this") mutates = true;
-      if (stmt.expr.kind === "call" && stmt.expr.callee.kind === "identifier" &&
-          stmt.expr.callee.name === "emit") emits = true;
     }
   });
 

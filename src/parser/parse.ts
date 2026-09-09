@@ -4,6 +4,8 @@ import path from "node:path";
 import type {
   IRContract,
   IRDecorator,
+  IREventDecl,
+  IREventParam,
   IRExpression,
   IRFunction,
   IRParam,
@@ -71,12 +73,19 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
 
   const stateVars: IRStateVar[] = [];
   const functions: IRFunction[] = [];
+  const events: IREventDecl[] = [];
 
   for (const member of cls.members) {
     if (ts.isPropertyDeclaration(member)) {
       stateVars.push(parseStateVar(member, ctx));
     } else if (ts.isMethodDeclaration(member)) {
-      functions.push(parseMethod(member, ctx));
+      // @event members declare a Solidity event rather than a function; the
+      // method body exists only to satisfy TypeScript and is discarded.
+      if (hasDecorator(member, "event", ctx)) {
+        events.push(parseEvent(member, ctx));
+      } else {
+        functions.push(parseMethod(member, ctx));
+      }
     } else if (ts.isConstructorDeclaration(member)) {
       functions.push(parseConstructor(member, ctx));
     }
@@ -88,7 +97,7 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
     stateVars,
     functions,
     errors: [],
-    events: [],
+    events,
     sourceFile: ctx.filePath,
     natspec: extractNatspec(cls, ctx),
     loc: loc(cls, ctx),
@@ -112,6 +121,37 @@ function extractNatspec(node: ts.Node, ctx: ParseContext): string[] | undefined 
     }
   }
   return lines.length > 0 ? lines : undefined;
+}
+
+function hasDecorator(node: ts.HasDecorators, name: string, ctx: ParseContext): boolean {
+  return parseDecorators(node, ctx).some((d) => d.name === name);
+}
+
+/**
+ * `Indexed<T>` marks an event parameter as indexed. It is a marker only -- the
+ * underlying type is what gets emitted.
+ */
+function unwrapIndexed(typeNode: ts.TypeNode, ctx: ParseContext): { type: IRType; indexed: boolean } {
+  if (ts.isTypeReferenceNode(typeNode)) {
+    const name = typeNode.typeName.getText(ctx.sourceFile);
+    const args = typeNode.typeArguments ?? [];
+    if (name === "Indexed" && args.length === 1) {
+      return { type: parseType(args[0]!, ctx), indexed: true };
+    }
+  }
+  return { type: parseType(typeNode, ctx), indexed: false };
+}
+
+function parseEvent(method: ts.MethodDeclaration, ctx: ParseContext): IREventDecl {
+  const name = method.name.getText(ctx.sourceFile);
+  const params: IREventParam[] = method.parameters.map((p) => {
+    const pname = p.name.getText(ctx.sourceFile);
+    const { type, indexed } = p.type
+      ? unwrapIndexed(p.type, ctx)
+      : { type: { kind: "custom", name: "unknown" } as IRType, indexed: false };
+    return { name: pname, type, indexed };
+  });
+  return { name, params, natspec: extractNatspec(method, ctx), loc: loc(method, ctx) };
 }
 
 function parseStateVar(prop: ts.PropertyDeclaration, ctx: ParseContext): IRStateVar {
@@ -270,9 +310,29 @@ function parseBlockBody(body: ts.Block, ctx: ParseContext): IRStatement[] {
   return body.statements.map((s) => parseStatement(s, ctx));
 }
 
+/**
+ * `emit(Transfer(a, b))` is a statement in Solidity, not a call, so it is
+ * lowered here rather than in emitCall -- otherwise it emits `emit(...)`, which
+ * solc rejects with "Expected event name or path".
+ */
+function tryParseEmit(expr: ts.Expression, ctx: ParseContext, l?: SourceLocation): IRStatement | undefined {
+  if (!ts.isCallExpression(expr)) return undefined;
+  if (expr.expression.getText(ctx.sourceFile) !== "emit") return undefined;
+  const [arg] = expr.arguments;
+  if (!arg || expr.arguments.length !== 1 || !ts.isCallExpression(arg)) return undefined;
+  return {
+    kind: "emit",
+    eventName: arg.expression.getText(ctx.sourceFile),
+    args: arg.arguments.map((a) => parseExpression(a, ctx)),
+    loc: l,
+  };
+}
+
 function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
   const l = loc(stmt, ctx);
   if (ts.isExpressionStatement(stmt)) {
+    const emitted = tryParseEmit(stmt.expression, ctx, l);
+    if (emitted) return emitted;
     return { kind: "expression", expr: parseExpression(stmt.expression, ctx), loc: l };
   }
   if (ts.isReturnStatement(stmt)) {
