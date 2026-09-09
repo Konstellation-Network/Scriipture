@@ -4,6 +4,7 @@ import { spawnSync, spawn } from "node:child_process";
 import pc from "picocolors";
 import { parseContractFiles } from "../parser/parse";
 import { emitProgram } from "../emitter/emit";
+import { optimizeProgram } from "../optimizer/passes";
 import { collectTsFiles } from "../cli/parse";
 import { resolveOZRoot } from "../compiler/solc";
 import { resolveTool } from "../runtime/tool-paths";
@@ -38,6 +39,11 @@ export async function runForgeTests(input: ForgeRunInput): Promise<ForgeRunResul
     console.error(pc.yellow(`no contracts at ${input.contractsGlob}`));
   } else {
     const { program } = parseContractFiles(contractFiles);
+    // Contracts under test must match what `build` ships, so the optimizer runs
+    // here too: passes like custom-errors change the revert path. Test harness
+    // contracts below are deliberately left unoptimized -- they are never
+    // deployed, and rewriting their requires would change assertion semantics.
+    optimizeProgram(program);
     for (const emitted of emitProgram(program)) {
       fs.writeFileSync(path.join(srcDir, `${emitted.name}.sol`), emitted.solidity, "utf8");
     }
