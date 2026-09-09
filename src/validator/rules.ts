@@ -4,10 +4,12 @@ import type {
   IRFunction,
   IRProgram,
   IRStatement,
+  SourceLocation,
 } from "../ir/types";
 import { resolveContract } from "../mapper/decorators";
 import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
+import { isSolidityReserved } from "./reserved";
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -88,10 +90,60 @@ export function validateContract(contract: IRContract, opts: ValidateOptions = {
     }
   }
 
+  out.push(...ruleReservedIdentifiers(contract));
+
   for (const plugin of getPluginValidatorRules()) {
     for (const d of plugin.run(contract)) {
       out.push({ ...d, rule: `plugin:${plugin.name}/${d.rule}` });
     }
+  }
+
+  return out;
+}
+
+function reservedDiagnostic(name: string, subject: string, loc?: SourceLocation): Diagnostic {
+  return {
+    rule: "solidity-reserved-identifier",
+    severity: "error",
+    message: `${subject} is a reserved word in Solidity and cannot be used as an identifier`,
+    loc,
+    fix: `rename it (e.g. "${name}_" or a more specific name)`,
+  };
+}
+
+/**
+ * Solidity reserves names that are perfectly legal in TypeScript. Without this
+ * check they reach solc, which reports the collision against generated .sol at
+ * a line the developer never wrote.
+ */
+function ruleReservedIdentifiers(contract: IRContract): Diagnostic[] {
+  const out: Diagnostic[] = [];
+
+  if (isSolidityReserved(contract.name)) {
+    out.push(reservedDiagnostic(contract.name, `contract "${contract.name}"`, contract.loc));
+  }
+
+  for (const v of contract.stateVars) {
+    if (isSolidityReserved(v.name)) {
+      out.push(reservedDiagnostic(v.name, `state variable "${v.name}"`, v.loc));
+    }
+  }
+
+  for (const fn of contract.functions) {
+    if (!fn.isConstructor && isSolidityReserved(fn.name)) {
+      out.push(reservedDiagnostic(fn.name, `function "${fn.name}"`, fn.loc));
+    }
+    // IRParam carries no loc, so these report against the function.
+    for (const p of fn.params) {
+      if (isSolidityReserved(p.name)) {
+        out.push(reservedDiagnostic(p.name, `parameter "${p.name}" of function "${fn.name}"`, fn.loc));
+      }
+    }
+    walkStatements(fn.body, (stmt) => {
+      if (stmt.kind === "let" && isSolidityReserved(stmt.name)) {
+        out.push(reservedDiagnostic(stmt.name, `local variable "${stmt.name}"`, stmt.loc ?? fn.loc));
+      }
+    });
   }
 
   return out;
