@@ -146,12 +146,13 @@ function emitHelpers(set: Set<"_validateAddr" | "_pullPayment">): string[] {
 }
 
 function emitError(err: IRErrorDecl): string[] {
-  const params = err.params.map((p) => `${solidityType(p.type, "memory")} ${p.name}`).join(", ");
+  // Error parameters take no data location -- "storage" yields the bare type.
+  const params = err.params.map((p) => `${solidityType(p.type)} ${p.name}`).join(", ");
   return [`    error ${err.name}(${params});`];
 }
 
 function emitEvent(ev: IREventDecl): string[] {
-  // Event parameters take no data location.
+  // Event parameters take no data location either.
   const params = ev.params
     .map((p) => `${solidityType(p.type)}${p.indexed ? " indexed" : ""} ${p.name}`)
     .join(", ");
