@@ -23,7 +23,7 @@ export interface DeployResult {
 
 export async function deploy({ artifact, network, config, args = [], privateKeyOverride, rpcOverride }: DeployInput): Promise<DeployResult> {
   const netConf = config.networks[network] ?? defaultNetworkFor(network);
-  const chain = resolveChain(network) as any;
+  const chain = resolveChain(network, config.networks) as any;
   const privateKey = privateKeyOverride ?? readPrivateKey(netConf);
   const account = privateKeyToAccount(privateKey);
   const rpcUrl = rpcOverride ?? netConf.rpcUrl ?? chain?.rpcUrls?.default?.http?.[0];

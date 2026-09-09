@@ -3,6 +3,7 @@ import path from "node:path";
 import { encodeAbiParameters } from "viem";
 import type { Abi, AbiParameter, Hex } from "viem";
 import { resolveChain } from "../deploy/networks";
+import { loadConfig } from "../config/load";
 
 const ETHERSCAN_V2 = "https://api.etherscan.io/v2/api";
 
@@ -25,7 +26,8 @@ export interface VerifyOutcome {
 }
 
 export async function verifyOnEtherscan(input: VerifyInput): Promise<VerifyOutcome> {
-  const chain = resolveChain(input.network) as any;
+  const { networks } = await loadConfig();
+  const chain = resolveChain(input.network, networks) as any;
   const chainId = chain.id;
   const artifactsDir = input.artifactsDir ?? path.resolve("out/artifacts");
   const standardJsonPath = path.join(artifactsDir, "solc-input.json");

@@ -4,6 +4,15 @@ export const NetworkConfigSchema = z.object({
   rpcUrl: z.string().url(),
   chainId: z.number().int().positive(),
   privateKeyEnv: z.string().optional(),
+  // Only needed for networks that are not built in; defaults to ETH/18.
+  nativeCurrency: z
+    .object({
+      name: z.string().default("Ether"),
+      symbol: z.string().default("ETH"),
+      decimals: z.number().int().positive().default(18),
+    })
+    .optional(),
+  blockExplorerUrl: z.string().url().optional(),
 });
 
 export const CompilerConfigSchema = z.object({

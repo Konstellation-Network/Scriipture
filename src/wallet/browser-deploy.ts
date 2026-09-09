@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createPublicClient, encodeDeployData, http as viemHttp } from "viem";
 import type { Abi, Hex } from "viem";
 import { resolveChain } from "../deploy/networks";
+import { loadConfig } from "../config/load";
 
 export interface BrowserDeployInput {
   contractName: string;
@@ -23,7 +24,8 @@ export interface BrowserDeployResult {
 }
 
 export async function browserDeploy(input: BrowserDeployInput): Promise<BrowserDeployResult> {
-  const chain = resolveChain(input.network) as any;
+  const { networks } = await loadConfig();
+  const chain = resolveChain(input.network, networks) as any;
   const rpcUrl = input.rpcUrl ?? chain?.rpcUrls?.default?.http?.[0];
   if (!rpcUrl) throw new Error(`no RPC URL for network "${input.network}"`);
 
