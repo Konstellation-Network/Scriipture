@@ -92,6 +92,7 @@ export function validateContract(contract: IRContract, opts: ValidateOptions = {
 
   out.push(...ruleReservedIdentifiers(contract));
   out.push(...ruleEventDeclarations(contract));
+  out.push(...ruleUndeclaredError(contract));
 
   for (const plugin of getPluginValidatorRules()) {
     for (const d of plugin.run(contract)) {
@@ -181,6 +182,32 @@ function ruleEventDeclarations(contract: IRContract): Diagnostic[] {
           message: `"${stmt.eventName}" is emitted but never declared`,
           loc: stmt.loc ?? fn.loc,
           fix: `declare it: @event ${stmt.eventName}(...): void {}`,
+        });
+      }
+    });
+  }
+
+  return out;
+}
+
+/**
+ * `revert(MyError(...))` of a name that was never declared cannot compile.
+ * Errors synthesized by the custom-errors optimizer pass are not visible here,
+ * but those are generated from requires and always declared alongside.
+ */
+function ruleUndeclaredError(contract: IRContract): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const declared = new Set(contract.errors.map((e) => e.name));
+
+  for (const fn of contract.functions) {
+    walkStatements(fn.body, (stmt) => {
+      if (stmt.kind === "revert" && stmt.errorName && !declared.has(stmt.errorName)) {
+        out.push({
+          rule: "undeclared-error",
+          severity: "error",
+          message: `"${stmt.errorName}" is reverted but never declared`,
+          loc: stmt.loc ?? fn.loc,
+          fix: `declare it: @error ${stmt.errorName}(...): void {}`,
         });
       }
     });

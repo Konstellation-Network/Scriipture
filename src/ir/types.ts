@@ -72,6 +72,8 @@ export interface IRSuperCall {
 export interface IRErrorDecl {
   name: string;
   params: IRParam[];
+  natspec?: string[];
+  loc?: SourceLocation;
 }
 
 export interface IREventParam {

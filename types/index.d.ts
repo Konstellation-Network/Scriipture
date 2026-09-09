@@ -46,6 +46,8 @@ declare module "scriipture" {
   export type Indexed<T> = T & { readonly __indexed: unique symbol };
   /** Declares a Solidity event. The method body is ignored. */
   export function event(...args: any[]): any;
+  /** Declares a Solidity custom error. The method body is ignored. */
+  export function error(...args: any[]): any;
 
   export function pullPayment(recipient: CheckedAddress, amount: bigint): void;
 

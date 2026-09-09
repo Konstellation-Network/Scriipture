@@ -5,6 +5,9 @@ import { walkStatementArrays } from "./walk";
 export function customErrors(contract: IRContract): OptimizationChange[] {
   const changes: OptimizationChange[] = [];
   const errorByMsg = new Map<string, IRErrorDecl>();
+  // Errors the user declared with @error. A synthesized name that collides with
+  // one would emit a duplicate declaration, so those requires are left alone.
+  const userDeclared = new Set(contract.errors.map((e) => e.name));
 
   for (const fn of contract.functions) {
     if (fn.isAssembly) continue;
@@ -20,6 +23,7 @@ export function customErrors(contract: IRContract): OptimizationChange[] {
         if (!message || message.kind !== "literal" || message.literalType !== "string") continue;
 
         const errorName = errorNameFromMessage(message.value);
+        if (userDeclared.has(errorName)) continue;
         if (!errorByMsg.has(errorName)) {
           const decl: IRErrorDecl = { name: errorName, params: [] };
           errorByMsg.set(errorName, decl);

@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   IRContract,
   IRDecorator,
+  IRErrorDecl,
   IREventDecl,
   IREventParam,
   IRExpression,
@@ -74,6 +75,7 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
   const stateVars: IRStateVar[] = [];
   const functions: IRFunction[] = [];
   const events: IREventDecl[] = [];
+  const errors: IRErrorDecl[] = [];
 
   for (const member of cls.members) {
     if (ts.isPropertyDeclaration(member)) {
@@ -83,6 +85,8 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
       // method body exists only to satisfy TypeScript and is discarded.
       if (hasDecorator(member, "event", ctx)) {
         events.push(parseEvent(member, ctx));
+      } else if (hasDecorator(member, "error", ctx)) {
+        errors.push(parseErrorDecl(member, ctx));
       } else {
         functions.push(parseMethod(member, ctx));
       }
@@ -96,7 +100,7 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
     bases,
     stateVars,
     functions,
-    errors: [],
+    errors,
     events,
     sourceFile: ctx.filePath,
     natspec: extractNatspec(cls, ctx),
@@ -140,6 +144,15 @@ function unwrapIndexed(typeNode: ts.TypeNode, ctx: ParseContext): { type: IRType
     }
   }
   return { type: parseType(typeNode, ctx), indexed: false };
+}
+
+function parseErrorDecl(method: ts.MethodDeclaration, ctx: ParseContext): IRErrorDecl {
+  return {
+    name: method.name.getText(ctx.sourceFile),
+    params: method.parameters.map((p) => parseParam(p, ctx)),
+    natspec: extractNatspec(method, ctx),
+    loc: loc(method, ctx),
+  };
 }
 
 function parseEvent(method: ts.MethodDeclaration, ctx: ParseContext): IREventDecl {
@@ -328,11 +341,31 @@ function tryParseEmit(expr: ts.Expression, ctx: ParseContext, l?: SourceLocation
   };
 }
 
+/**
+ * `revert(InsufficientBalance(a, b))` is Solidity's `revert Name(a, b);` -- a
+ * statement, not a call. Only a call argument is treated this way, so
+ * `revert("msg")` keeps its existing string-revert lowering in emitCall.
+ */
+function tryParseRevert(expr: ts.Expression, ctx: ParseContext, l?: SourceLocation): IRStatement | undefined {
+  if (!ts.isCallExpression(expr)) return undefined;
+  if (expr.expression.getText(ctx.sourceFile) !== "revert") return undefined;
+  const [arg] = expr.arguments;
+  if (!arg || expr.arguments.length !== 1 || !ts.isCallExpression(arg)) return undefined;
+  return {
+    kind: "revert",
+    errorName: arg.expression.getText(ctx.sourceFile),
+    args: arg.arguments.map((a) => parseExpression(a, ctx)),
+    loc: l,
+  };
+}
+
 function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
   const l = loc(stmt, ctx);
   if (ts.isExpressionStatement(stmt)) {
     const emitted = tryParseEmit(stmt.expression, ctx, l);
     if (emitted) return emitted;
+    const reverted = tryParseRevert(stmt.expression, ctx, l);
+    if (reverted) return reverted;
     return { kind: "expression", expr: parseExpression(stmt.expression, ctx), loc: l };
   }
   if (ts.isReturnStatement(stmt)) {
