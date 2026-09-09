@@ -50,6 +50,8 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
     }
     case "revert":
       return [`${indent}revert ${stmt.errorName}(${stmt.args.map((a) => emitExpression(a, ctx)).join(", ")});`];
+    case "emit":
+      return [`${indent}emit ${stmt.eventName}(${stmt.args.map((a) => emitExpression(a, ctx)).join(", ")});`];
     case "while": {
       const lines: string[] = [];
       lines.push(`${indent}while (${emitExpression(stmt.test, ctx)}) {`);

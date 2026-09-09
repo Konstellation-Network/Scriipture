@@ -37,6 +37,7 @@ export type IRStatement =
   | { kind: "block"; body: IRStatement[]; loc?: SourceLocation }
   | { kind: "unchecked"; body: IRStatement[]; loc?: SourceLocation }
   | { kind: "revert"; errorName: string; args: IRExpression[]; loc?: SourceLocation }
+  | { kind: "emit"; eventName: string; args: IRExpression[]; loc?: SourceLocation }
   | { kind: "let"; name: string; type?: IRType; init?: IRExpression; isConst: boolean; loc?: SourceLocation }
   | { kind: "throw"; argument: IRExpression; loc?: SourceLocation }
   | { kind: "raw"; text: string; loc?: SourceLocation };
@@ -82,6 +83,8 @@ export interface IREventParam {
 export interface IREventDecl {
   name: string;
   params: IREventParam[];
+  natspec?: string[];
+  loc?: SourceLocation;
 }
 
 export interface IRFunction {

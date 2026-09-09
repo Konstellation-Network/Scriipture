@@ -42,6 +42,11 @@ declare module "scriipture" {
   export function revert(message?: string): never;
   export function emit(...args: any[]): void;
 
+  /** Marks an event parameter as indexed (max 3 per event). */
+  export type Indexed<T> = T & { readonly __indexed: unique symbol };
+  /** Declares a Solidity event. The method body is ignored. */
+  export function event(...args: any[]): any;
+
   export function pullPayment(recipient: CheckedAddress, amount: bigint): void;
 
   export function keccak256(data: any): Bytes32;
