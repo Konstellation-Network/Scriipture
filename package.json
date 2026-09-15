@@ -43,12 +43,13 @@
     "ethereum",
     "evm",
     "base",
-    "optimism",
-    "arbitrary",
     "security",
     "slither",
     "fuzz",
-    "audit"
+    "audit",
+    "base-sepolia",
+    "sepolia",
+    "foundry"
   ],
   "scripts": {
     "cli": "bun run src/cli/index.ts",

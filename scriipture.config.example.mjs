@@ -1,5 +1,6 @@
-/** @type {import("scriipture").Config} */
-const config = {
+import { defineConfig } from "scriipture";
+
+export default defineConfig({
   compiler: {
     version: "0.8.20",
     optimizer: { enabled: true, runs: 200 },
@@ -30,6 +31,4 @@ const config = {
   },
   outDir: "out",
   plugins: [],
-};
-
-export default config;
+});

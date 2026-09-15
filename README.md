@@ -116,7 +116,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 
 | # | Gate | Catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 15 rules |
+| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 16 rules |
 | 2 | solc | syntax and type errors |
 | 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — Z3-backed proofs |
 | 4 | Mythril | symbolic execution (opt-in via `--deep`) |
@@ -157,7 +157,7 @@ Deployed contracts auto-verify on the matching Etherscan-family explorer when an
 | `doctor [--fix]` | Check the environment; `--fix` installs what's missing |
 | `init [dir]` | Scaffold a project — contracts, config, tsconfig, scripts |
 | `build <input>` | Transpile TypeScript → Solidity (optimizer on by default) |
-| `validate <input>` | Static checks, 15 native rules |
+| `validate <input>` | Static checks, 16 native rules |
 | `verify <input>` | The full 9-gate pipeline |
 | `compile <input>` | solc → ABI + bytecode |
 | `deploy <Contract> -n <net>` | Deploy via browser wallet, auto-verify source |

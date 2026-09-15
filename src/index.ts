@@ -22,7 +22,8 @@ export { computePackedLayout, countStorageSlots, storageBitSize } from "./optimi
 export type { PackedLayout } from "./optimizer/pack-slots";
 
 export { compileSolidity } from "./compiler/solc";
-export type { CompileInput, CompileResult, CompiledArtifact, SMTCheckerFinding } from "./compiler/solc";
+export type { CompileInput, CompileResult, CompiledArtifact, SMTCheckerFinding, ModelCheckerStatus } from "./compiler/solc";
+export { nativeSolc } from "./compiler/solc";
 
 export { buildSourceMap } from "./sourcemaps/emit";
 export type { SourceMap, SourceMapEntry } from "./sourcemaps/emit";
@@ -30,8 +31,8 @@ export type { SourceMap, SourceMapEntry } from "./sourcemaps/emit";
 export { resolveContract } from "./mapper/decorators";
 export type { ContractResolution, DecoratorResolution } from "./mapper/decorators";
 
-export { ConfigSchema, NetworkConfigSchema, CompilerConfigSchema } from "./config/schema";
-export type { Config, NetworkConfig } from "./config/schema";
+export { ConfigSchema, NetworkConfigSchema, CompilerConfigSchema, defineConfig } from "./config/schema";
+export type { Config, ConfigInput, NetworkConfig } from "./config/schema";
 export { loadConfig } from "./config/load";
 
 export type {
@@ -67,8 +68,8 @@ export type { MythrilFinding, MythrilResult, MythrilOptions } from "./audit/myth
 export { renderAuditNotes } from "./audit/notes";
 
 export { generateFuzzHarness } from "./security/fuzz-gen";
-export { collectInvariants, renderInvariantTest } from "./security/invariants";
-export type { InvariantSpec } from "./security/invariants";
+export { collectInvariants, renderInvariantTest, renderSmtInvariantHarness, classifyInvariantProofs } from "./security/invariants";
+export type { InvariantSpec, InvariantProofResult } from "./security/invariants";
 export { checkPatterns, hashBytecode } from "./security/pattern-library";
 export {
   collectToolVersions,

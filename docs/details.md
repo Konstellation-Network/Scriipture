@@ -236,7 +236,7 @@ Every decorator and the Solidity it produces:
 | `@onlyOwner` | `@onlyOwner mint(...) { ... }` | `function … public onlyOwner` + `import Ownable` + `is Ownable` + constructor `Ownable(msg.sender)` auto-injected |
 | `@nonReentrant` | `@nonReentrant withdraw(...) { ... }` | `function … nonReentrant` + `import ReentrancyGuard` + `is ReentrancyGuard` |
 | `@whenNotPaused` | `@whenNotPaused doX(...) { ... }` | `function … whenNotPaused` + `import Pausable` + `is Pausable` |
-| `@invariant` | `@invariant solvent(): boolean { return totalAssets >= totalLiabilities; }` | becomes a Forge `invariant_solvent()` test auto-generated and run during `verify` |
+| `@invariant` | `@invariant solvent(): boolean { return totalAssets >= totalLiabilities; }` | becomes a Forge `invariant_solvent()` fuzz test **and** an SMTChecker `assert(solvent())` proof obligation, both generated and run during `verify` |
 | `@assembly` | `@assembly add(a: bigint, b: bigint): bigint { return yul\`add(a, b)\` }` | `function … { assembly { add(a, b) } }` — body inlined as Yul |
 | `@unsafe("reason")` | `@unsafe("legacy contract requires tx.origin")` | annotation only — silences the secure-mode footgun check, recorded in the audit pack |
 | `@allowTxOrigin("…")`, `@allowSelfdestruct("…")`, `@allowZeroAddress("…")`, `@allowLowLevelCall("…")` | targeted overrides for specific patterns | bypasses just that one secure-mode rule, with the justification stored in attestation |
@@ -366,9 +366,14 @@ const signer: Address = ecrecover(hash, v, r, s);
 ```ts
 import { validate } from "scriipture";
 
-const safe: CheckedAddress = validate(input);   // emits require(input != address(0))
-payable(safe).transfer(amount);                  // type system enforces validated-only
+const safe: CheckedAddress = validate(input);   // emits _validateAddr(input): require(input != address(0))
+payable(safe).transfer(amount);
 ```
+
+`CheckedAddress` is a TypeScript brand and is erased in the emitted Solidity; a single `as Address` cast would defeat it. Two things make it real:
+
+- `validate()` lowers to a runtime `require(a != address(0))` helper, so the check exists on-chain.
+- The native rule **`require-checked-address`** flags any `Address` parameter (or a local aliasing one) that reaches a `.transfer` / `.send` / `.call` / `.delegatecall` / `.staticcall` target or `pullPayment()` without passing through `validate()` and without being typed `CheckedAddress`. It is a warning in `validate` and an error under `--secure` / `verify`; `@allowZeroAddress("reason")` or `@unsafe("reason")` opts a function out with a recorded justification.
 
 ---
 
@@ -404,7 +409,7 @@ The `pack-slots` pass is **advisory**: it reports how many storage slots you wou
 
 ### `validate <input>`
 
-Static checks (15 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
+Static checks (16 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
@@ -424,7 +429,7 @@ The 9-gate security pipeline. Runs in order:
 4. Slither static analysis
 5. Pattern library (recognized OZ bases/imports)
 6. Auto-generated fuzz harnesses (forge, 1000 runs/method default)
-7. Auto-derived invariant tests (forge)
+7. Auto-derived invariant tests: forge fuzzing, then an SMTChecker proof attempt per invariant
 8. Attestation bundle written to `out/audit/<Contract>/`
 
 Skip individual gates:
@@ -525,14 +530,14 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 15 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 16 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
-| 3 | **SMTChecker** | solc's built-in (Z3/CHC engine) | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants | 15s timeout per query |
+| 3 | **SMTChecker** | native `solc` (Z3/CHC engine) | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. Needs a native `solc` on the PATH (`brew install solidity`); the bundled solc-js cannot run Z3, and the gate is then recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
 | 5 | **Slither** | Slither 0.11+ | 70+ vulnerability detectors — reentrancy, arbitrary-send, dangerous strict equality, locked ether, weak-randomness, … | ~10-30s |
 | 6 | **pattern-library** | Scriipture | inherited bases and imports must be from the known-safe list (OpenZeppelin v5, forge-std) | <1s |
 | 7 | **fuzz-harness** | forge | auto-generates 1 fuzz test per public method, runs 1000 random inputs each, catches unexpected reverts | depends on `--fuzz-runs` |
-| 8 | **invariant-tests** | forge | `@invariant` decorators emit forge invariant tests, runs 128k random call sequences, ensures properties hold across state transitions | similar to fuzz |
+| 8 | **invariant-tests** + **invariant-proof** | forge, then native `solc` SMTChecker | `@invariant` decorators emit forge invariant tests (random call sequences — *evidence*, not proof) **and** an SMTChecker harness that asserts each invariant so the CHC engine can try to prove it over every reachable state (*proof*, when the solver finishes). The attestation records, per invariant, proven / unproven / violated | forge: similar to fuzz; SMT: 15s per query |
 | 9 | **attestation** | Scriipture | reproducible-build manifest with TS hash, Sol hash, bytecode hash, every tool version, every gate result with an explicit `passed` / `failed` / `skipped` / `not-applicable` status (plus the operator's justification for any skip), canonical-JSON fingerprint | <1s |
 
 ### Why Mythril is opt-in
@@ -563,7 +568,8 @@ In practice, most Solidity bugs that have stolen real money fall into the catego
 - Integer over/underflow: SMTChecker (within solc, with the optimizer enabled in 0.8.x, this is rare anyway)
 - Arbitrary send: Slither high severity
 - Replay across chains: fuzz harness with mocked source
-- Sub-quorum signature acceptance: invariant test (you write one assertion)
+- Sub-quorum signature acceptance: invariant test (you write one assertion; forge searches for a counterexample and SMTChecker tries to prove there is none)
+- Funds sent to an unvalidated address: native rule `require-checked-address` (any `Address` param reaching `.transfer` / `.send` / `.call` / `pullPayment()` must pass `validate()` or be typed `CheckedAddress`)
 
 ### What it doesn't catch
 
@@ -608,12 +614,12 @@ Built-in networks:
 | `base-sepolia` | 84532 | https://sepolia.base.org |
 | `base` | 8453 | https://mainnet.base.org |
 
-Add any viem-supported chain in `scriipture.config.ts`:
+Add any chain in `scriipture.config.mjs` — `rpcUrl` and `chainId` are all that's required (`nativeCurrency` and `blockExplorerUrl` are optional):
 
-```ts
-import type { Config } from "scriipture";
+```js
+import { defineConfig } from "scriipture";
 
-const config: Config = {
+export default defineConfig({
   networks: {
     optimism: {
       rpcUrl: "https://mainnet.optimism.io",
@@ -628,9 +634,7 @@ const config: Config = {
       chainId: 137,
     },
   },
-};
-
-export default config;
+});
 ```
 
 Then `npx scriipture deploy MyContract -n optimism` just works. Browser-wallet flow handles chain switching automatically — your wallet extension prompts to add the chain if it's not in its list.
@@ -732,7 +736,7 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Compile | solc | hardhat compile | forge build | **scriipture compile** |
 | Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
-| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 15 native rules) |
+| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 16 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
 | Deploy | ethers/viem script | hardhat-deploy | cast/forge | **browser-wallet first-class** |
 | Source verification | manual upload to BaseScan | hardhat-verify plugin | forge verify-contract | **auto on every deploy** |

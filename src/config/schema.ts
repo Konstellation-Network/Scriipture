@@ -37,3 +37,10 @@ export const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
+/** What a `scriipture.config.*` file may export: every field optional, defaults applied on load. */
+export type ConfigInput = z.input<typeof ConfigSchema>;
+
+/** Type-checks a config file's export without changing it. */
+export function defineConfig(config: ConfigInput): ConfigInput {
+  return config;
+}

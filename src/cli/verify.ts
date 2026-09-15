@@ -13,7 +13,13 @@ import { runSlither, slitherInstalled } from "../audit/slither";
 import { runMythril, mythrilInstalled } from "../audit/mythril";
 import { resolveTool } from "../runtime/tool-paths";
 import { generateFuzzHarness } from "../security/fuzz-gen";
-import { collectInvariants, renderInvariantTest } from "../security/invariants";
+import {
+  collectInvariants,
+  renderInvariantTest,
+  renderSmtInvariantHarness,
+  classifyInvariantProofs,
+  SMT_HARNESS_SUFFIX,
+} from "../security/invariants";
 import { checkPatterns } from "../security/pattern-library";
 import {
   collectToolVersions,
@@ -138,8 +144,15 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     recordAll(skipped("smt-checker", "skipped (--no-smt)"));
   } else {
     const smtResult = compileSolidity({ solFiles, config, modelCheck: true });
+    if (!smtResult.modelChecker?.ran) {
+      // No solver ran: this is "never checked", not "0 findings".
+      const reason = smtResult.modelChecker?.reason ?? "SMTChecker unavailable";
+      reportGate(true, `skipped — ${reason}`);
+      recordAll(skipped("smt-checker", `skipped (${reason})`));
+    } else {
     const smtErrors = smtResult.smtFindings.filter((f) => f.severity === "error");
     const gate3Ok = smtErrors.length === 0;
+    console.log(pc.dim(`  engine: ${smtResult.modelChecker.engine} ${smtResult.modelChecker.version ?? ""}`));
     for (const c of program.contracts) {
       const mine = smtResult.smtFindings.filter((f) => path.basename(f.file ?? "") === `${c.name}.sol`);
       const errors = mine.filter((f) => f.severity === "error").length;
@@ -151,6 +164,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     for (const f of smtResult.smtFindings.slice(0, 3)) {
       const tag = f.severity === "error" ? pc.red : pc.yellow;
       console.log(`  ${tag(`[${f.severity}]`)} ${f.message.split("\n")[0]}`);
+    }
     }
   }
 
@@ -272,28 +286,31 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
           : gateNotApplicable("fuzz-run", "no harness generated"));
       }
     } else {
-      ensureForgeProject(forgeRoot);
       const runs = opts.fuzzRuns ?? 1000;
-      const forge = await resolveTool("forge");
-      const r = spawnSync(forge.cmd, [...forge.argPrefix, "test", "--root", forgeRoot, "--fuzz-runs", String(runs), "--match-contract", "FuzzAuto"], { stdio: "inherit" });
+      const forgeReady = ensureForgeProject(forgeRoot);
+      const r = forgeReady
+        ? await runForge(forgeRoot, ["--fuzz-runs", String(runs), "--match-contract", "FuzzAuto"])
+        : { status: null as number | null };
       const gate6Ok = r.status === 0;
+      const failDetail = forgeReady ? "forge test failed — a fuzz run reverted or forge could not compile (see output)" : FORGE_STD_MISSING;
       for (const c of program.contracts) {
         if (!harnessed.has(c.name)) {
           record(c.name, gateNotApplicable("fuzz-run", "no harness generated"));
         } else {
-          record(c.name, gate6Ok ? gatePassed("fuzz-run", `${runs} runs/method clean`) : gateFailed("fuzz-run", "forge test failed"));
+          record(c.name, gate6Ok ? gatePassed("fuzz-run", `${runs} runs/method clean`) : gateFailed("fuzz-run", failDetail));
         }
       }
       if (!gate6Ok) allResults.ok = false;
-      reportGate(gate6Ok, `${harnessed.size} harness(es), ${runs} runs each`);
+      reportGate(gate6Ok, gate6Ok ? `${harnessed.size} harness(es), ${runs} runs each` : failDetail);
     }
   }
 
-  // Gate 8 — invariant tests
+  // Gate 8 — invariant tests: forge fuzzing (evidence) + SMTChecker proof attempt
   banner("Gate 8/9 — invariant tests");
   if (opts.noInvariants) {
     reportGate(true, "skipped (--no-invariants)");
     recordAll(skipped("invariant-tests", "skipped (--no-invariants)"));
+    recordAll(skipped("invariant-proof", "skipped (--no-invariants)"));
   } else {
     const emittedInvariants = new Map<string, number>();
     for (const c of program.contracts) {
@@ -315,22 +332,65 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       emittedInvariants.set(c.name, invs.length);
     }
     if (emittedInvariants.size > 0 && !opts.noFuzzRun) {
-      ensureForgeProject(forgeRoot);
-      const forge2 = await resolveTool("forge");
-      const r = spawnSync(forge2.cmd, [...forge2.argPrefix, "test", "--root", forgeRoot, "--match-contract", "InvariantAuto"], { stdio: "inherit" });
+      const forgeReady = ensureForgeProject(forgeRoot);
+      const r = forgeReady
+        ? await runForge(forgeRoot, ["--match-contract", "InvariantAuto"])
+        : { status: null as number | null };
       const gate7Ok = r.status === 0;
+      // forge's exit code does not separate "assertion failed" from "could not compile / no forge-std";
+      // say so instead of announcing a violation that may not exist.
+      const failDetail = forgeReady
+        ? "forge invariant run failed — a violation was found or forge could not compile (see output)"
+        : FORGE_STD_MISSING;
       for (const [name, count] of emittedInvariants) {
         record(name, gate7Ok
-          ? gatePassed("invariant-tests", `${count} invariant(s) hold`, count)
-          : gateFailed("invariant-tests", `${count} invariant(s) emitted; forge invariant run failed`, count));
+          ? gatePassed("invariant-tests", `${count} invariant(s) held under forge fuzzing`, count)
+          : gateFailed("invariant-tests", `${count} invariant(s) emitted; ${failDetail}`, count));
       }
       if (!gate7Ok) allResults.ok = false;
-      reportGate(gate7Ok, gate7Ok ? "all invariants hold" : "an invariant was violated");
+      reportGate(gate7Ok, gate7Ok ? "all invariants held under forge fuzzing" : failDetail);
     } else {
       for (const [name, count] of emittedInvariants) {
         record(name, skipped("invariant-tests", `${count} invariant(s) emitted; run skipped (--skip fuzz-run)`));
       }
       reportGate(true, emittedInvariants.size > 0 ? "emitted (run skipped)" : "none declared");
+    }
+
+    // Proof attempt: assert each invariant inside a harness that inherits the
+    // contract and let solc's CHC engine try to prove it over all reachable states.
+    for (const c of program.contracts) {
+      const invs = collectInvariants(c);
+      const harness = renderSmtInvariantHarness(c, invs);
+      if (!harness) {
+        record(c.name, gateNotApplicable("invariant-proof", invs.length === 0 ? "no invariants declared" : "constructor needs args; manual harness required"));
+        continue;
+      }
+      if (opts.noSmt) {
+        record(c.name, skipped("invariant-proof", `${invs.length} invariant(s) not proven (--no-smt)`));
+        continue;
+      }
+      const harnessFile = `${c.name}${SMT_HARNESS_SUFFIX}.sol`;
+      const harnessPath = path.join(solDir, harnessFile);
+      fs.writeFileSync(harnessPath, harness, "utf8");
+      const r = compileSolidity({ solFiles: [path.join(solDir, `${c.name}.sol`), harnessPath], config, modelCheck: true });
+      if (!r.modelChecker?.ran) {
+        const reason = r.modelChecker?.reason ?? "SMTChecker unavailable";
+        record(c.name, skipped("invariant-proof", `${invs.length} invariant(s) not proven: ${reason}`));
+        console.log(`  ${pc.yellow("⚠")} ${c.name}: SMT proof skipped — ${reason}`);
+        continue;
+      }
+      const verdict = classifyInvariantProofs(invs, harness, r.smtFindings, harnessFile);
+      const summary = `${verdict.proven.length}/${invs.length} proven by SMTChecker` +
+        (verdict.unproven.length > 0 ? `; unproven (solver gave up): ${verdict.unproven.join(", ")}` : "") +
+        (verdict.violated.length > 0 ? `; VIOLATED: ${verdict.violated.join(", ")}` : "");
+      if (verdict.violated.length > 0) {
+        record(c.name, gateFailed("invariant-proof", summary, verdict.violated.length));
+        allResults.ok = false;
+        reportGate(false, `${c.name}: ${summary}`);
+      } else {
+        record(c.name, gatePassed("invariant-proof", summary, verdict.unproven.length));
+        reportGate(true, `${c.name}: ${summary}`);
+      }
     }
   }
 
@@ -402,11 +462,22 @@ function reportGate(ok: boolean, msg: string): void {
   console.log(`  ${ok ? pc.green("✓") : pc.red("✗")} ${msg}`);
 }
 
-function ensureForgeProject(root: string): void {
+const FORGE_STD_MISSING = "forge-std could not be fetched (git clone failed — offline?); forge did not run";
+
+async function runForge(root: string, args: string[]): Promise<{ status: number | null }> {
+  const forge = await resolveTool("forge");
+  const r = spawnSync(forge.cmd, [...forge.argPrefix, "test", "--root", root, ...args], { stdio: "inherit" });
+  return { status: r.status };
+}
+
+/** Prepare the forge project; returns false when forge-std is unavailable, in which case forge cannot run. */
+function ensureForgeProject(root: string): boolean {
   fs.mkdirSync(path.join(root, "lib"), { recursive: true });
   const stdPath = path.join(root, "lib", "forge-std", "src", "Test.sol");
   if (!fs.existsSync(stdPath)) {
-    spawnSync("git", ["clone", "--depth", "1", "https://github.com/foundry-rs/forge-std", path.join(root, "lib", "forge-std")], { stdio: "inherit" });
+    const dest = path.join(root, "lib", "forge-std");
+    fs.rmSync(dest, { recursive: true, force: true }); // a half-cloned tree from an earlier failure
+    spawnSync("git", ["clone", "--depth", "1", "https://github.com/foundry-rs/forge-std", dest], { stdio: "inherit" });
   }
   const toml = `[profile.default]
 src = "src"
@@ -421,4 +492,5 @@ remappings = [
 ]
 `;
   fs.writeFileSync(path.join(root, "foundry.toml"), toml, "utf8");
+  return fs.existsSync(stdPath);
 }

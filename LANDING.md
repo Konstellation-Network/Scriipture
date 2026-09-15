@@ -137,7 +137,7 @@ Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 
 | Gate | Tool | What it catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin`, `selfdestruct`, `delegatecall` to input, zero-address mint, integer division (15 rules) |
+| 1 | Native validator | `tx.origin`, `selfdestruct`, `delegatecall` to input, zero-address mint, integer division (16 rules) |
 | 2 | solc | syntax + type errors |
 | 3 | SMTChecker | overflow / underflow / division-by-zero / assertion violations (Z3-backed proofs) |
 | 4 | Mythril | symbolic execution — opt-in via `--deep` |

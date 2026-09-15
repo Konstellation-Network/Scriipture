@@ -62,6 +62,10 @@ export async function auditCommand(input: string, opts: AuditOptions): Promise<v
   }
   console.log("");
   console.log(`${native.length} native + ${slitherFindings.length} slither diagnostic(s), ${errors} error(s)${slitherInstalled ? "" : " — slither skipped"}`);
+  if (opts.strict && solFiles.length > 0 && !slitherInstalled) {
+    console.error(pc.red("✗ --strict: slither did not run, so this audit is incomplete"));
+    process.exit(1);
+  }
   if (opts.strict && all.length > 0) process.exit(1);
   if (errors > 0) process.exit(1);
 }

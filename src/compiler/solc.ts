@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import solc from "solc";
 import type { Config } from "../config/schema";
 
@@ -17,12 +18,26 @@ export interface SMTCheckerFinding {
   line?: number;
 }
 
+/**
+ * Whether the SMTChecker actually executed. The solc-js (Emscripten) build
+ * cannot start the Z3 solver thread, so model checking needs a native `solc`
+ * on the PATH; when neither works the gate must be recorded as skipped, not
+ * as "0 findings".
+ */
+export interface ModelCheckerStatus {
+  ran: boolean;
+  engine?: "native-solc" | "solc-js";
+  version?: string;
+  reason?: string;
+}
+
 export interface CompileResult {
   artifacts: CompiledArtifact[];
   errors: string[];
   warnings: string[];
   smtFindings: SMTCheckerFinding[];
   standardJsonInput: string;
+  modelChecker?: ModelCheckerStatus;
 }
 
 export interface CompileInput {
@@ -30,6 +45,8 @@ export interface CompileInput {
   config: Config;
   modelCheck?: boolean;
 }
+
+const SMT_UNAVAILABLE_HINT = "install a native solc (`brew install solidity`, or a static build from github.com/ethereum/solidity/releases) — the bundled solc-js cannot run the Z3 solver";
 
 export function compileSolidity({ solFiles, config, modelCheck = false }: CompileInput): CompileResult {
   const sources: Record<string, { content: string }> = {};
@@ -56,23 +73,43 @@ export function compileSolidity({ solFiles, config, modelCheck = false }: Compil
       timeout: 15000,
       invariants: ["contract"],
       showUnproved: true,
-      contracts: Object.fromEntries(Object.keys(sources).map((f) => [f, []])),
     };
   }
 
-  const input = { language: "Solidity", sources, settings };
-  const inputJson = JSON.stringify(input);
+  let output: any;
+  let modelChecker: ModelCheckerStatus | undefined;
+  let inputJson: string;
 
-  const output = JSON.parse(
-    solc.compile(inputJson, { import: importResolver }),
-  );
+  const native = modelCheck ? nativeSolc() : null;
+  if (modelCheck && native) {
+    // Native solc gets every import inlined so it needs no filesystem access.
+    inlineImports(sources);
+    inputJson = JSON.stringify({ language: "Solidity", sources, settings });
+    const r = spawnSync(native.path, ["--standard-json"], { input: inputJson, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    try {
+      output = JSON.parse(r.stdout || "{}");
+      modelChecker = { ran: true, engine: "native-solc", version: native.version };
+    } catch {
+      output = { errors: [{ severity: "error", message: `native solc produced no JSON: ${(r.stderr || "").split("\n")[0]}` }] };
+      modelChecker = { ran: false, reason: `native solc at ${native.path} failed: ${(r.stderr || "").split("\n")[0]}` };
+    }
+  } else {
+    inputJson = JSON.stringify({ language: "Solidity", sources, settings });
+    output = JSON.parse(solc.compile(inputJson, { import: importResolver }));
+    if (modelCheck) modelChecker = { ran: true, engine: "solc-js", version: solc.version() };
+  }
 
   const errors: string[] = [];
   const warnings: string[] = [];
   const smtFindings: SMTCheckerFinding[] = [];
   if (output.errors) {
     for (const e of output.errors) {
-      const msg = e.formattedMessage ?? e.message;
+      const msg: string = e.formattedMessage ?? e.message ?? String(e);
+      if (modelCheck && isSolverFailure(e)) {
+        // solc-js: "thread constructor failed" from Z3; the compile itself is fine, the checker never ran.
+        modelChecker = { ran: false, engine: modelChecker?.engine, reason: `the ${modelChecker?.engine ?? "solc"} build could not start the Z3 solver — ${SMT_UNAVAILABLE_HINT}` };
+        continue;
+      }
       if (e.errorCode && String(e.errorCode).startsWith("64")) {
         const loc = e.sourceLocation ?? {};
         smtFindings.push({
@@ -105,7 +142,56 @@ export function compileSolidity({ solFiles, config, modelCheck = false }: Compil
     }
   }
 
-  return { artifacts, errors, warnings, smtFindings, standardJsonInput: inputJson };
+  // Model checking with no solver never produces findings; say so rather than reporting a clean run.
+  if (modelCheck && modelChecker?.ran && errors.length > 0) {
+    modelChecker = { ...modelChecker, ran: false, reason: `compile failed during model checking: ${firstLine(errors[0]!)}` };
+  }
+
+  return { artifacts, errors, warnings, smtFindings, standardJsonInput: inputJson, modelChecker };
+}
+
+function firstLine(s: string): string {
+  return s.split("\n")[0]?.trim() ?? s;
+}
+
+function isSolverFailure(e: any): boolean {
+  const msg = String(e.formattedMessage ?? e.message ?? "");
+  if (e.type === "Exception" && /thread|solver|z3|smt/i.test(msg)) return true;
+  return /thread constructor failed|no SMT solver|SMT solver .* not available/i.test(msg);
+}
+
+/** A native `solc` binary on the PATH, if any. */
+export function nativeSolc(): { path: string; version: string } | null {
+  const which = spawnSync(process.platform === "win32" ? "where" : "which", ["solc"], { encoding: "utf8" });
+  const p = (which.stdout || "").split("\n")[0]?.trim();
+  if (which.status !== 0 || !p) return null;
+  const v = spawnSync(p, ["--version"], { encoding: "utf8" });
+  if (v.status !== 0) return null;
+  const version = (v.stdout || "").split("\n").find((l) => /^Version:/.test(l))?.replace(/^Version:\s*/, "") ?? "unknown";
+  return { path: p, version };
+}
+
+/**
+ * Pull every transitively imported file into the sources map, keyed by the
+ * source unit name solc will look for, so a native solc can compile with
+ * `--standard-json` and no `--allow-paths`.
+ */
+function inlineImports(sources: Record<string, { content: string }>): void {
+  const queue = Object.keys(sources);
+  while (queue.length > 0) {
+    const unit = queue.shift()!;
+    const content = sources[unit]!.content;
+    for (const m of content.matchAll(/^\s*import\s+(?:[^"';]*?\s+from\s+)?["']([^"']+)["']\s*;/gm)) {
+      const spec = m[1]!;
+      const resolved = spec.startsWith(".") ? path.posix.normalize(path.posix.join(path.posix.dirname(unit), spec)) : spec;
+      if (sources[resolved]) continue;
+      const found = importResolver(resolved);
+      if ("contents" in found) {
+        sources[resolved] = { content: found.contents };
+        queue.push(resolved);
+      }
+    }
+  }
 }
 
 function lineFromOffset(content: string | undefined, offset: number | undefined): number | undefined {

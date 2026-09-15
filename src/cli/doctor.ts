@@ -38,9 +38,9 @@ const CHECKS: Check[] = [
     },
   },
   {
-    name: "solc (native, for Slither)",
+    name: "solc (native, with Z3 — runs SMTChecker in gates 3 and 8)",
     required: false,
-    probe: () => probeCmd("solc", "--version", "`brew install solidity`  (only needed if you use `scriipture audit`)"),
+    probe: () => probeCmd("solc", "--version", "`brew install solidity`  — without it the SMTChecker gates are recorded as skipped (the bundled solc-js cannot run Z3)"),
   },
   {
     name: "slither (Docker or native)",

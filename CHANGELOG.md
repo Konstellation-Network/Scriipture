@@ -4,7 +4,20 @@ All notable changes to Scriipture follow [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Fixed
+- **Gate 3 (SMTChecker) never actually ran.** The model-checker settings passed `contracts: { "<file>": [] }`, which solc rejects with "Source contracts must be a non-empty array"; the gate only looked at SMT findings, not compile errors, so every run reported "0 finding(s)". On top of that the bundled solc-js (Emscripten) build cannot start the Z3 solver thread at all. Model checking now runs through a native `solc` on the PATH (imports are inlined so it needs no filesystem access), and when no solver can run the gate is recorded as **skipped** with the reason, never as clean. `scriipture doctor` says so too.
+- `scriipture audit --strict` now exits non-zero when Slither did not run instead of printing a note and passing.
+- Gates 7 and 8 no longer announce "an invariant was violated" when forge could not run at all (forge-std clone failed, compile error); the gate still fails, but the detail says what actually happened, and a half-cloned forge-std is cleaned up before retrying.
+
 ### Added
+- **Gate 8 gains a proof stage.** Alongside the forge invariant test (random call sequences: evidence), `verify` now emits an SMTChecker harness that inherits the contract and asserts every `@invariant`, and asks solc's CHC engine to prove each one over all reachable states. The attestation carries an `invariant-proof` gate result per contract with proven / unproven / violated invariants; a violation fails the gate. The docs no longer describe fuzzing as symbolic execution.
+- **`require-checked-address` validator rule.** `CheckedAddress` was a TypeScript brand erased at emit, so `as Address` defeated it. The new rule traces `Address` parameters (and locals aliasing them) into `.transfer` / `.send` / `.call` / `.delegatecall` / `.staticcall` targets and `pullPayment()`, and reports any that did not pass through `validate()` or arrive typed `CheckedAddress`. Warning in `validate`, error under `--secure`; `@allowZeroAddress("…")` / `@unsafe("…")` opt out with a recorded justification. Rule count is now 16.
+- `defineConfig()` is exported from `scriipture` for typed `scriipture.config.mjs` files; the example config and docs use it.
+- `CompileResult.modelChecker` reports whether the SMTChecker ran, with which engine, and why not; `nativeSolc()` is exported.
+
+### Changed
+- npm keywords list only chains that ship (`base`, `base-sepolia`, `sepolia`); `optimism` and the misspelt `arbitrary` are gone.
+
 - **Structs.** A file-level `interface Foo { … }` or `type Foo = { … }` next to the contract class becomes `struct Foo { … }` inside every contract in that file. Object literals lower to `Foo({a: x, b: y})`, taking the struct name from the slot they flow into (typed local, return value, state var initializer, `Map.set` / `push` on a state var, own-method argument) or from an explicit `{ … } as Foo`. Struct locals bound to storage (`const p = this.items.get(k)`) are emitted as `Foo storage p`, so writes through them reach storage. Struct params and returns get `memory`.
 - **Enums.** A file-level `enum Status { A, B }` becomes `enum Status { A, B }` inside the contract; `Status.A` emits unchanged. Member initializers are a parse diagnostic (Solidity numbers members from 0).
 - **Fixed-width integers and bytes.** `Uint8` … `Uint256`, `Int8` … `Int256` and `Bytes1` … `Bytes31` are exported from `scriipture` (as branded `bigint` / `string`) and map to the matching Solidity primitive. `Bytes` now maps to `bytes` and `Bytes32` to `bytes32` as primitives. Invalid widths (`Uint7`) are a parse diagnostic.
