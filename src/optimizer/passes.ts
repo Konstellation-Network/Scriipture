@@ -24,12 +24,23 @@ export interface OptimizationChange {
   applied?: boolean;
 }
 
-export type Pass = (contract: IRContract) => OptimizationChange[];
+export interface OptimizeOptions {
+  /**
+   * Let `pack-slots` reorder state variables to save storage slots.
+   * Off by default: reordering rewrites the storage layout, which breaks
+   * upgradeable proxies and anything else that depends on slot positions.
+   */
+  reorderStorage?: boolean;
+}
 
+export type Pass = (contract: IRContract, options: OptimizeOptions) => OptimizationChange[];
+
+// Order matters: `immutable` and `constant` run before `pack-slots` so that
+// variables which will not occupy storage are already marked when slots are counted.
 export const PASSES: Array<{ name: string; fn: Pass }> = [
-  { name: "pack-slots", fn: packSlots },
   { name: "immutable", fn: immutablePass },
   { name: "constant", fn: constantPass },
+  { name: "pack-slots", fn: packSlots },
   { name: "zero-init-strip", fn: zeroInitStrip },
   { name: "custom-errors", fn: customErrors },
   { name: "calldata-params", fn: calldataParams },
@@ -44,14 +55,14 @@ export const PASSES: Array<{ name: string; fn: Pass }> = [
 
 import { getPluginOptimizerPasses } from "../plugin/api";
 
-export function optimizeProgram(program: IRProgram): OptimizationReport[] {
-  return program.contracts.map((c) => optimizeContract(c));
+export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {}): OptimizationReport[] {
+  return program.contracts.map((c) => optimizeContract(c, options));
 }
 
-export function optimizeContract(contract: IRContract): OptimizationReport {
+export function optimizeContract(contract: IRContract, options: OptimizeOptions = {}): OptimizationReport {
   const changes: OptimizationChange[] = [];
   for (const pass of PASSES) {
-    const passChanges = pass.fn(contract);
+    const passChanges = pass.fn(contract, options);
     for (const ch of passChanges) changes.push(ch);
   }
   for (const plugin of getPluginOptimizerPasses()) {

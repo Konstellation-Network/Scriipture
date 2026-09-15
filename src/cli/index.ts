@@ -51,8 +51,9 @@ program
   .description("Transpile TypeScript contract(s) to Solidity (optimizer applied by default)")
   .option("-o, --out <dir>", "output directory", "out/sol")
   .option("--no-optimize", "skip optimizer passes")
-  .action(async (input: string, opts: { out: string; optimize: boolean }) => {
-    await buildCommand(input, { out: opts.out, noOptimize: !opts.optimize });
+  .option("--reorder-storage", "let pack-slots reorder state variables to save slots (rewrites the storage layout; never use with upgradeable proxies)")
+  .action(async (input: string, opts: { out: string; optimize: boolean; reorderStorage?: boolean }) => {
+    await buildCommand(input, { out: opts.out, noOptimize: !opts.optimize, reorderStorage: opts.reorderStorage });
   });
 
 program
@@ -208,9 +209,10 @@ program
   .option("--fuzz-runs <n>", "forge fuzz iterations per method (default 1000)", (v) => parseInt(v, 10))
   .option("--deep", "enable Mythril symbolic execution (Gate 4, ~90s/contract)")
   .option("--mythril-timeout <s>", "Mythril execution timeout per contract in seconds", (v) => parseInt(v, 10))
-  .action(async (input: string, opts: { skip: string; fuzzRuns?: number; deep?: boolean; mythrilTimeout?: number }) => {
+  .option("--reorder-storage", "let pack-slots reorder state variables to save slots (rewrites the storage layout)")
+  .action(async (input: string, opts: { skip: string; fuzzRuns?: number; deep?: boolean; mythrilTimeout?: number; reorderStorage?: boolean }) => {
     const skip = opts.skip ? opts.skip.split(",").map((s) => s.trim()) : [];
-    const r = await verifyCommand(input, { skip, fuzzRuns: opts.fuzzRuns, deep: opts.deep, mythrilTimeout: opts.mythrilTimeout });
+    const r = await verifyCommand(input, { skip, fuzzRuns: opts.fuzzRuns, deep: opts.deep, mythrilTimeout: opts.mythrilTimeout, reorderStorage: opts.reorderStorage });
     process.exit(r.ok ? 0 : 1);
   });
 
@@ -226,11 +228,14 @@ program
   .option("--no-slither", "skip Slither")
   .option("--no-invariants", "skip invariant tests")
   .option("--no-patterns", "skip pattern library check")
+  .option("--deep", "also run Mythril symbolic execution (Gate 4, ~90s/contract)")
+  .option("--allow-skipped-gates <justification>", "deploy even though gates were skipped; the reason is recorded on every skipped gate in the attestation")
   .action(async (input: string, opts: any) => {
     await secureDeployCommand(input, {
       network: opts.network, args: opts.args, artifacts: opts.artifacts, contract: opts.contract,
       noFuzz: !opts.fuzz, noSmt: !opts.smt, noSlither: !opts.slither,
       noInvariants: !opts.invariants, noPatterns: !opts.patterns,
+      deep: opts.deep, allowSkippedGates: opts.allowSkippedGates,
     });
   });
 

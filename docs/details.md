@@ -340,13 +340,15 @@ Transpiles `.ts` contracts in `<input>` to `.sol` in `out/sol/`. Runs optimizer 
 
 Pass `--no-optimize` to skip optimization (useful for debugging).
 
+The `pack-slots` pass is **advisory**: it reports how many storage slots you would save by declaring state variables in a different order, but never reorders them itself, because reordering rewrites the contract's storage layout (fatal for upgradeable proxies, and the kind of drift the audit tooling exists to flag). Pass `--reorder-storage` to apply the suggested order on a fresh, non-upgradeable contract.
+
 ### `validate <input>`
 
 Static checks (15 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
-Reports advisory optimization hints (storage caching, indexed event params, mapping load reuse) that aren't auto-applied.
+Reports advisory optimization hints (storage slot packing, storage caching, indexed event params, mapping load reuse) that aren't auto-applied.
 
 ### `compile <input>`
 
@@ -372,6 +374,8 @@ npx scriipture verify contracts --skip fuzz,invariants,patterns
 npx scriipture verify contracts --fuzz-runs 5000
 ```
 
+Every gate result in the attestation carries an explicit `status`: `passed`, `failed`, `skipped`, or `not-applicable` (the gate had nothing to check, e.g. no `@invariant` declared). A skipped gate is recorded as skipped, never as passed, so an auditor can always tell "clean" from "never ran". `passed` is `true` only for `status: "passed"`.
+
 ### `gasdiff <input>`
 
 Builds optimized + unoptimized bytecode, compiles each, prints a table of bytecode size deltas.
@@ -394,6 +398,15 @@ npx scriipture deploy MyToken -n base-sepolia --no-verify
 ### `secure-deploy <input> -c <Contract> -n <network>`
 
 Full pipeline: runs `verify` (all 9 gates), refuses to deploy unless every gate passes, then deploys. Designed for production where deploy without prior verification is unacceptable.
+
+It also refuses to deploy when any gate was **skipped** (`--no-smt`, `--no-slither`, `--no-fuzz`, `--no-invariants`, `--no-patterns`): an attestation with a hole in it is not an attestation. To ship anyway, say why:
+
+```bash
+npx scriipture secure-deploy contracts -c MyToken -n base \
+  --no-smt --allow-skipped-gates "SMTChecker times out on MyToken; tracked in issue #42"
+```
+
+The justification is recorded on every skipped gate in the attestation bundle, the same way `@unsafe("…")` and `@allow*("…")` justifications are. Mythril (Gate 4) is opt-in via `--deep` and does not need a justification; it is recorded as `skipped` with `optIn: true`.
 
 ### `verify-source <Contract> -n <network>`
 
@@ -460,7 +473,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 | 6 | **pattern-library** | Scriipture | inherited bases and imports must be from the known-safe list (OpenZeppelin v5, forge-std) | <1s |
 | 7 | **fuzz-harness** | forge | auto-generates 1 fuzz test per public method, runs 1000 random inputs each, catches unexpected reverts | depends on `--fuzz-runs` |
 | 8 | **invariant-tests** | forge | `@invariant` decorators emit forge invariant tests, runs 128k random call sequences, ensures properties hold across state transitions | similar to fuzz |
-| 9 | **attestation** | Scriipture | reproducible-build manifest with TS hash, Sol hash, bytecode hash, every tool version, every gate result, canonical-JSON fingerprint | <1s |
+| 9 | **attestation** | Scriipture | reproducible-build manifest with TS hash, Sol hash, bytecode hash, every tool version, every gate result with an explicit `passed` / `failed` / `skipped` / `not-applicable` status (plus the operator's justification for any skip), canonical-JSON fingerprint | <1s |
 
 ### Why Mythril is opt-in
 

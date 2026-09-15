@@ -9,15 +9,61 @@ export interface ToolVersion {
   version: string;
 }
 
+/**
+ * What actually happened to a gate.
+ *
+ * - `passed` / `failed`: the gate ran and produced a verdict.
+ * - `skipped`: the gate was switched off (`--skip`, `--no-*`, or an opt-in gate not enabled).
+ * - `not-applicable`: the gate had nothing to check (no invariants declared, no fuzzable methods).
+ *
+ * An attestation must let a reader tell "clean" from "never ran", so `passed`
+ * is only true when the status is `passed`.
+ */
+export type GateStatus = "passed" | "failed" | "skipped" | "not-applicable";
+
 export interface GateResult {
   name: string;
+  status: GateStatus;
+  /** `true` only when `status === "passed"`. Kept for readers of schemaVersion 1. */
   passed: boolean;
   detail?: string;
   findings?: number;
+  /** Set on skipped gates when the operator supplied a reason for shipping without them. */
+  justification?: string;
+  /** Gate is off unless explicitly enabled (Mythril `--deep`); skipping it needs no justification. */
+  optIn?: boolean;
+}
+
+export function gatePassed(name: string, detail?: string, findings?: number): GateResult {
+  return { name, status: "passed", passed: true, detail, findings };
+}
+
+export function gateFailed(name: string, detail?: string, findings?: number): GateResult {
+  return { name, status: "failed", passed: false, detail, findings };
+}
+
+export function gateSkipped(
+  name: string,
+  reason: string,
+  extra: { justification?: string; optIn?: boolean } = {},
+): GateResult {
+  const r: GateResult = { name, status: "skipped", passed: false, detail: reason };
+  if (extra.justification) r.justification = extra.justification;
+  if (extra.optIn) r.optIn = true;
+  return r;
+}
+
+export function gateNotApplicable(name: string, reason: string): GateResult {
+  return { name, status: "not-applicable", passed: false, detail: reason };
+}
+
+/** Skipped gates that would leave a hole in the attestation: not opt-in and not justified. */
+export function unjustifiedSkippedGates<T extends GateResult>(gates: T[]): T[] {
+  return gates.filter((g) => g.status === "skipped" && !g.optIn && !g.justification);
 }
 
 export interface AttestationBundle {
-  schemaVersion: 1;
+  schemaVersion: 2;
   contract: string;
   network?: string;
   address?: string;

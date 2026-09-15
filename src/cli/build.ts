@@ -10,6 +10,8 @@ import { collectTsFiles } from "./parse";
 export interface BuildOptions {
   out?: string;
   noOptimize?: boolean;
+  /** Apply the storage-slot reordering from `pack-slots` (changes the storage layout). */
+  reorderStorage?: boolean;
 }
 
 export async function buildCommand(input: string, opts: BuildOptions): Promise<void> {
@@ -45,7 +47,7 @@ export async function buildCommand(input: string, opts: BuildOptions): Promise<v
     fs.writeFileSync(path.join(unoptDir, `${c.name}.sol`), c.solidity, "utf8");
   }
 
-  const reports = optimizeProgram(program);
+  const reports = optimizeProgram(program, { reorderStorage: opts.reorderStorage });
   const optEmitted = emitProgram(program);
 
   for (const c of optEmitted) {

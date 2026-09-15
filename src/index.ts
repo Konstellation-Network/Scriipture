@@ -17,7 +17,9 @@ export type { Diagnostic, Severity } from "./validator/diagnostics";
 export { formatDiagnostic } from "./validator/diagnostics";
 
 export { optimizeProgram, optimizeContract, PASSES as OPTIMIZER_PASSES } from "./optimizer/passes";
-export type { OptimizationReport, OptimizationChange, Pass } from "./optimizer/passes";
+export type { OptimizationReport, OptimizationChange, OptimizeOptions, Pass } from "./optimizer/passes";
+export { computePackedLayout, countStorageSlots, storageBitSize } from "./optimizer/pack-slots";
+export type { PackedLayout } from "./optimizer/pack-slots";
 
 export { compileSolidity } from "./compiler/solc";
 export type { CompileInput, CompileResult, CompiledArtifact, SMTCheckerFinding } from "./compiler/solc";
@@ -68,5 +70,10 @@ export {
   writeAttestation,
   attestationFingerprint,
   sha256,
+  gatePassed,
+  gateFailed,
+  gateSkipped,
+  gateNotApplicable,
+  unjustifiedSkippedGates,
 } from "./security/attestation";
-export type { AttestationBundle, GateResult, ToolVersion } from "./security/attestation";
+export type { AttestationBundle, GateResult, GateStatus, ToolVersion } from "./security/attestation";

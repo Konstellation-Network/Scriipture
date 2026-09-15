@@ -19,6 +19,10 @@ import {
   collectToolVersions,
   sha256,
   writeAttestation,
+  gatePassed,
+  gateFailed,
+  gateSkipped,
+  gateNotApplicable,
   type AttestationBundle,
   type GateResult,
 } from "../security/attestation";
@@ -37,6 +41,10 @@ export interface VerifyOptions {
   skip?: string[];
   deep?: boolean;
   mythrilTimeout?: number;
+  /** Apply the storage-slot reordering from `pack-slots` (changes the storage layout). */
+  reorderStorage?: boolean;
+  /** Recorded on every skipped gate so the attestation says why it did not run. */
+  skipJustification?: string;
 }
 
 export function applySkipList(opts: VerifyOptions): VerifyOptions {
@@ -54,22 +62,16 @@ export function applySkipList(opts: VerifyOptions): VerifyOptions {
   };
 }
 
-export interface VerifyResult {
-  ok: boolean;
-  gates: GateResult[];
-  attestations: Array<{ contract: string; path: string; fingerprint: string }>;
+export interface ContractGateResult extends GateResult {
+  contract: string;
 }
 
-const GATE_NAMES = [
-  "1-native-validator",
-  "2-solc-compile",
-  "3-smt-checker",
-  "4-slither",
-  "5-pattern-library",
-  "6-fuzz-harness",
-  "7-invariant-tests",
-  "8-attestation",
-];
+export interface VerifyResult {
+  ok: boolean;
+  /** Every per-contract gate result, exactly as written to the attestation bundles. */
+  gates: ContractGateResult[];
+  attestations: Array<{ contract: string; path: string; fingerprint: string }>;
+}
 
 export async function verifyCommand(input: string, opts: VerifyOptions): Promise<VerifyResult> {
   opts = applySkipList(opts);
@@ -88,7 +90,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   fs.mkdirSync(auditDir, { recursive: true });
 
   const { program } = parseContractFiles(files);
-  const optimizations = optimizeProgram(program);
+  const optimizations = optimizeProgram(program, { reorderStorage: opts.reorderStorage });
   const emitted = emitProgram(program);
 
   for (const e of emitted) fs.writeFileSync(path.join(solDir, `${e.name}.sol`), e.solidity, "utf8");
@@ -96,6 +98,14 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const allResults: VerifyResult = { ok: true, gates: [], attestations: [] };
   const contractGates = new Map<string, GateResult[]>();
   for (const c of program.contracts) contractGates.set(c.name, []);
+  const record = (contractName: string, result: GateResult): void => {
+    contractGates.get(contractName)!.push(result);
+  };
+  const recordAll = (result: GateResult): void => {
+    for (const c of program.contracts) record(c.name, { ...result });
+  };
+  const skipped = (name: string, reason: string, optIn = false): GateResult =>
+    gateSkipped(name, reason, { justification: opts.skipJustification, optIn });
 
   // Gate 1 — native validator (secure mode)
   banner("Gate 1/9 — native validator (secure mode)");
@@ -103,12 +113,9 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const nativeErrors = native.filter((d) => d.severity === "error");
   const gate1Ok = nativeErrors.length === 0;
   for (const c of program.contracts) {
-    contractGates.get(c.name)!.push({
-      name: "native-validator",
-      passed: nativeErrors.filter((d) => d.loc?.file === c.sourceFile).length === 0,
-      detail: `${native.length} diagnostic(s), ${nativeErrors.length} error(s)`,
-      findings: native.length,
-    });
+    const mine = nativeErrors.filter((d) => d.loc?.file === c.sourceFile).length;
+    const detail = `${native.length} diagnostic(s), ${nativeErrors.length} error(s)`;
+    record(c.name, mine === 0 ? gatePassed("native-validator", detail, native.length) : gateFailed("native-validator", detail, native.length));
   }
   if (!gate1Ok) allResults.ok = false;
   reportGate(gate1Ok, `${nativeErrors.length} error(s), ${native.length} total diagnostic(s)`);
@@ -119,13 +126,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const solFiles = emitted.map((e) => path.join(solDir, `${e.name}.sol`));
   const compileResult = compileSolidity({ solFiles, config });
   const gate2Ok = compileResult.errors.length === 0;
-  for (const c of program.contracts) {
-    contractGates.get(c.name)!.push({
-      name: "solc-compile",
-      passed: gate2Ok,
-      detail: gate2Ok ? "clean" : `${compileResult.errors.length} compile error(s)`,
-    });
-  }
+  recordAll(gate2Ok ? gatePassed("solc-compile", "clean") : gateFailed("solc-compile", `${compileResult.errors.length} compile error(s)`));
   if (!gate2Ok) allResults.ok = false;
   reportGate(gate2Ok, gate2Ok ? "clean" : `${compileResult.errors.length} error(s)`);
   for (const e of compileResult.errors.slice(0, 3)) console.error(pc.red(`  ${e.split("\n")[0]}`));
@@ -134,19 +135,16 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   banner("Gate 3/9 — SMTChecker");
   if (opts.noSmt) {
     reportGate(true, "skipped (--no-smt)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "smt-checker", passed: true, detail: "skipped" });
+    recordAll(skipped("smt-checker", "skipped (--no-smt)"));
   } else {
     const smtResult = compileSolidity({ solFiles, config, modelCheck: true });
     const smtErrors = smtResult.smtFindings.filter((f) => f.severity === "error");
     const gate3Ok = smtErrors.length === 0;
     for (const c of program.contracts) {
-      const hits = smtResult.smtFindings.filter((f) => path.basename(f.file ?? "") === `${c.name}.sol`).length;
-      contractGates.get(c.name)!.push({
-        name: "smt-checker",
-        passed: smtResult.smtFindings.filter((f) => f.severity === "error" && path.basename(f.file ?? "") === `${c.name}.sol`).length === 0,
-        detail: `${hits} finding(s)`,
-        findings: hits,
-      });
+      const mine = smtResult.smtFindings.filter((f) => path.basename(f.file ?? "") === `${c.name}.sol`);
+      const errors = mine.filter((f) => f.severity === "error").length;
+      const detail = `${mine.length} finding(s)`;
+      record(c.name, errors === 0 ? gatePassed("smt-checker", detail, mine.length) : gateFailed("smt-checker", detail, mine.length));
     }
     if (!gate3Ok) allResults.ok = false;
     reportGate(gate3Ok, `${smtResult.smtFindings.length} finding(s), ${smtErrors.length} error(s)`);
@@ -160,14 +158,14 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   banner("Gate 4/9 — Mythril (symbolic execution)");
   if (!opts.deep) {
     reportGate(true, "skipped (run `scriipture verify --deep` to enable; mythril is slow, ~90s/contract)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "mythril", passed: true, detail: "skipped (not --deep)" });
+    recordAll(skipped("mythril", "skipped (opt-in gate; --deep not set)", true));
   } else if (opts.noMythril) {
     reportGate(true, "skipped (--skip mythril)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "mythril", passed: true, detail: "skipped" });
+    recordAll(skipped("mythril", "skipped (--skip mythril)"));
   } else if (!mythrilInstalled()) {
     reportGate(false, "mythril not installed — `pipx install mythril` or `docker pull mythril/myth`");
     allResults.ok = false;
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "mythril", passed: false, detail: "not installed" });
+    recordAll(gateFailed("mythril", "not installed"));
   } else {
     const sourcemapsM = program.contracts.map((c) => {
       const sol = fs.readFileSync(path.join(solDir, `${c.name}.sol`), "utf8");
@@ -177,13 +175,10 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     const errors = r.diagnostics.filter((d) => d.severity === "error");
     const gateMOk = errors.length === 0;
     for (const c of program.contracts) {
-      const myFindings = r.findings.filter((f) => f.solFile === `${c.name}.sol`);
-      contractGates.get(c.name)!.push({
-        name: "mythril",
-        passed: myFindings.filter((f) => f.severity === "error").length === 0,
-        detail: `${myFindings.length} finding(s)`,
-        findings: myFindings.length,
-      });
+      const mine = r.findings.filter((f) => f.solFile === `${c.name}.sol`);
+      const high = mine.filter((f) => f.severity === "error").length;
+      const detail = `${mine.length} finding(s)`;
+      record(c.name, high === 0 ? gatePassed("mythril", detail, mine.length) : gateFailed("mythril", detail, mine.length));
     }
     if (!gateMOk) allResults.ok = false;
     reportGate(gateMOk, `${r.findings.length} issue(s), ${errors.length} high-severity`);
@@ -197,11 +192,11 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   banner("Gate 5/9 — Slither");
   if (opts.noSlither) {
     reportGate(true, "skipped (--no-slither)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "slither", passed: true, detail: "skipped" });
+    recordAll(skipped("slither", "skipped (--no-slither)"));
   } else if (!slitherInstalled()) {
     reportGate(false, "slither not installed — brew install slither-analyzer");
     allResults.ok = false;
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "slither", passed: false, detail: "not installed" });
+    recordAll(gateFailed("slither", "not installed"));
   } else {
     const sourcemaps = program.contracts.map((c) => {
       const sol = fs.readFileSync(path.join(solDir, `${c.name}.sol`), "utf8");
@@ -211,13 +206,10 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     const errors = r.diagnostics.filter((d) => d.severity === "error");
     const gate4Ok = errors.length === 0;
     for (const c of program.contracts) {
-      const myFindings = r.findings.filter((f) => f.solFile === `${c.name}.sol`);
-      contractGates.get(c.name)!.push({
-        name: "slither",
-        passed: myFindings.filter((f) => f.severity === "error").length === 0,
-        detail: `${myFindings.length} finding(s)`,
-        findings: myFindings.length,
-      });
+      const mine = r.findings.filter((f) => f.solFile === `${c.name}.sol`);
+      const high = mine.filter((f) => f.severity === "error").length;
+      const detail = `${mine.length} finding(s)`;
+      record(c.name, high === 0 ? gatePassed("slither", detail, mine.length) : gateFailed("slither", detail, mine.length));
     }
     if (!gate4Ok) allResults.ok = false;
     reportGate(gate4Ok, `${r.findings.length} finding(s), ${errors.length} high-severity`);
@@ -227,20 +219,16 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     }
   }
 
-  // Gate 5 — pattern library
+  // Gate 6 — pattern library
   banner("Gate 6/9 — pattern library");
   if (opts.noPatterns) {
     reportGate(true, "skipped (--no-patterns)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "pattern-library", passed: true, detail: "skipped" });
+    recordAll(skipped("pattern-library", "skipped (--no-patterns)"));
   } else {
     let gate5Ok = true;
     for (const c of program.contracts) {
       const r = checkPatterns(c);
-      contractGates.get(c.name)!.push({
-        name: "pattern-library",
-        passed: r.ok,
-        detail: r.ok ? "all bases/imports recognized" : r.findings.join("; "),
-      });
+      record(c.name, r.ok ? gatePassed("pattern-library", "all bases/imports recognized") : gateFailed("pattern-library", r.findings.join("; ")));
       if (!r.ok) {
         gate5Ok = false;
         for (const f of r.findings) console.log(`  ${pc.yellow("[warn]")} ${c.name}: ${f}`);
@@ -254,27 +242,35 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   banner("Gate 7/9 — auto-generated fuzz harnesses");
   if (opts.noFuzz) {
     reportGate(true, "skipped (--no-fuzz)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "fuzz-harness", passed: true, detail: "skipped" });
+    recordAll(skipped("fuzz-harness-generated", "skipped (--no-fuzz)"));
+    recordAll(skipped("fuzz-run", "skipped (--no-fuzz)"));
   } else {
     fs.mkdirSync(path.join(forgeRoot, "src"), { recursive: true });
     fs.mkdirSync(path.join(forgeRoot, "test"), { recursive: true });
     for (const e of emitted) fs.writeFileSync(path.join(forgeRoot, "src", `${e.name}.sol`), e.solidity, "utf8");
 
-    let generated = 0;
+    const harnessed = new Set<string>();
     for (const c of program.contracts) {
       const h = generateFuzzHarness(c);
       if (h) {
         fs.writeFileSync(path.join(forgeRoot, "test", h.filename), h.solidity, "utf8");
-        generated++;
-        contractGates.get(c.name)!.push({ name: "fuzz-harness-generated", passed: true, detail: h.filename });
+        harnessed.add(c.name);
+        record(c.name, gatePassed("fuzz-harness-generated", h.filename));
       } else {
-        contractGates.get(c.name)!.push({ name: "fuzz-harness-generated", passed: true, detail: "skipped (ctor needs args or no public methods)" });
+        record(c.name, gateNotApplicable("fuzz-harness-generated", "ctor needs args or no public methods"));
       }
     }
 
-    if (generated === 0 || opts.noFuzzRun) {
-      reportGate(true, opts.noFuzzRun ? "generation only (--no-fuzz-run)" : "no harnesses to run");
-      for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "fuzz-run", passed: true, detail: "skipped" });
+    if (harnessed.size === 0) {
+      reportGate(true, "no harnesses to run");
+      recordAll(gateNotApplicable("fuzz-run", "no harness generated"));
+    } else if (opts.noFuzzRun) {
+      reportGate(true, "generation only (--no-fuzz-run)");
+      for (const c of program.contracts) {
+        record(c.name, harnessed.has(c.name)
+          ? skipped("fuzz-run", "skipped (--skip fuzz-run)")
+          : gateNotApplicable("fuzz-run", "no harness generated"));
+      }
     } else {
       ensureForgeProject(forgeRoot);
       const runs = opts.fuzzRuns ?? 1000;
@@ -282,14 +278,14 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       const r = spawnSync(forge.cmd, [...forge.argPrefix, "test", "--root", forgeRoot, "--fuzz-runs", String(runs), "--match-contract", "FuzzAuto"], { stdio: "inherit" });
       const gate6Ok = r.status === 0;
       for (const c of program.contracts) {
-        contractGates.get(c.name)!.push({
-          name: "fuzz-run",
-          passed: gate6Ok,
-          detail: gate6Ok ? `${runs} runs/method clean` : "forge test failed",
-        });
+        if (!harnessed.has(c.name)) {
+          record(c.name, gateNotApplicable("fuzz-run", "no harness generated"));
+        } else {
+          record(c.name, gate6Ok ? gatePassed("fuzz-run", `${runs} runs/method clean`) : gateFailed("fuzz-run", "forge test failed"));
+        }
       }
       if (!gate6Ok) allResults.ok = false;
-      reportGate(gate6Ok, `${generated} harness(es), ${runs} runs each`);
+      reportGate(gate6Ok, `${harnessed.size} harness(es), ${runs} runs each`);
     }
   }
 
@@ -297,38 +293,44 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   banner("Gate 8/9 — invariant tests");
   if (opts.noInvariants) {
     reportGate(true, "skipped (--no-invariants)");
-    for (const c of program.contracts) contractGates.get(c.name)!.push({ name: "invariant-tests", passed: true, detail: "skipped" });
+    recordAll(skipped("invariant-tests", "skipped (--no-invariants)"));
   } else {
-    let anyInvariants = false;
+    const emittedInvariants = new Map<string, number>();
     for (const c of program.contracts) {
       const invs = collectInvariants(c);
       if (invs.length === 0) {
-        contractGates.get(c.name)!.push({ name: "invariant-tests", passed: true, detail: "no invariants declared" });
+        record(c.name, gateNotApplicable("invariant-tests", "no invariants declared"));
         continue;
       }
       const sol = renderInvariantTest(c, invs);
       if (!sol) {
-        contractGates.get(c.name)!.push({ name: "invariant-tests", passed: true, detail: "constructor needs args; manual harness required" });
+        record(c.name, gateNotApplicable("invariant-tests", "constructor needs args; manual harness required"));
         continue;
       }
+      fs.mkdirSync(path.join(forgeRoot, "src"), { recursive: true });
+      fs.mkdirSync(path.join(forgeRoot, "test"), { recursive: true });
+      const srcPath = path.join(forgeRoot, "src", `${c.name}.sol`);
+      if (!fs.existsSync(srcPath)) fs.writeFileSync(srcPath, emitted.find((e) => e.name === c.name)!.solidity, "utf8");
       fs.writeFileSync(path.join(forgeRoot, "test", `${c.name}.inv.t.sol`), sol, "utf8");
-      anyInvariants = true;
-      contractGates.get(c.name)!.push({
-        name: "invariant-tests",
-        passed: true,
-        detail: `${invs.length} invariant(s) emitted`,
-        findings: invs.length,
-      });
+      emittedInvariants.set(c.name, invs.length);
     }
-    if (anyInvariants && !opts.noFuzzRun) {
+    if (emittedInvariants.size > 0 && !opts.noFuzzRun) {
       ensureForgeProject(forgeRoot);
       const forge2 = await resolveTool("forge");
       const r = spawnSync(forge2.cmd, [...forge2.argPrefix, "test", "--root", forgeRoot, "--match-contract", "InvariantAuto"], { stdio: "inherit" });
       const gate7Ok = r.status === 0;
+      for (const [name, count] of emittedInvariants) {
+        record(name, gate7Ok
+          ? gatePassed("invariant-tests", `${count} invariant(s) hold`, count)
+          : gateFailed("invariant-tests", `${count} invariant(s) emitted; forge invariant run failed`, count));
+      }
       if (!gate7Ok) allResults.ok = false;
       reportGate(gate7Ok, gate7Ok ? "all invariants hold" : "an invariant was violated");
     } else {
-      reportGate(true, anyInvariants ? "emitted (run skipped)" : "none declared");
+      for (const [name, count] of emittedInvariants) {
+        record(name, skipped("invariant-tests", `${count} invariant(s) emitted; run skipped (--skip fuzz-run)`));
+      }
+      reportGate(true, emittedInvariants.size > 0 ? "emitted (run skipped)" : "none declared");
     }
   }
 
@@ -342,8 +344,9 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     const tsHash = sha256(fs.readFileSync(contract.sourceFile, "utf8"));
     const solHash = sha256(solSource);
     const art = compileResult.artifacts.find((a) => a.contractName === contract.name);
+    const gates = contractGates.get(contract.name)!;
     const bundle: AttestationBundle = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: contract.name,
       hashes: {
         tsSource: tsHash,
@@ -352,7 +355,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
         deployedBytecode: art ? sha256(art.deployedBytecode) : undefined,
       },
       tools,
-      gates: contractGates.get(contract.name)!,
+      gates,
       optimizations: optimizations.find((r) => r.contract === contract.name)?.changes ?? [],
       diagnostics: native.filter((d) => d.loc?.file === contract.sourceFile).map((d) => ({
         rule: d.rule,
@@ -367,13 +370,22 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     const attPath = path.join(dir, `${contract.name}.attestation.json`);
     const fingerprint = writeAttestation(attPath, bundle);
     allResults.attestations.push({ contract: contract.name, path: attPath, fingerprint });
+    for (const g of gates) allResults.gates.push({ ...g, contract: contract.name });
     console.log(`  ${pc.cyan(contract.name)} → ${attPath}`);
     console.log(`    fingerprint: ${pc.dim(fingerprint.slice(0, 16) + "…")}`);
   }
   reportGate(true, `${allResults.attestations.length} attestation(s) written`);
 
+  const skippedNames = Array.from(new Set(allResults.gates.filter((g) => g.status === "skipped" && !g.optIn).map((g) => g.name)));
+  if (skippedNames.length > 0) {
+    console.log(pc.yellow(`  ⚠ skipped gate(s) recorded as "skipped", not "passed": ${skippedNames.join(", ")}`));
+    if (opts.skipJustification) console.log(pc.yellow(`    justification: ${opts.skipJustification}`));
+  }
+
   console.log("");
-  if (allResults.ok) {
+  if (allResults.ok && skippedNames.length > 0 && !opts.skipJustification) {
+    console.log(pc.bold(pc.green("✓ ALL GATES THAT RAN PASSED")) + pc.yellow(` — ${skippedNames.length} gate(s) skipped; secure-deploy will refuse without --allow-skipped-gates "<reason>"`));
+  } else if (allResults.ok) {
     console.log(pc.bold(pc.green("✓ ALL GATES PASSED — contracts are clear for deploy")));
   } else {
     console.log(pc.bold(pc.red("✗ ONE OR MORE GATES FAILED — deploy is blocked")));

@@ -4,6 +4,17 @@ All notable changes to Scriipture follow [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed
+- **`pack-slots` is now advisory.** It used to reorder `stateVars` in place — moving every small variable ahead of mappings, arrays and `uint256`s — which silently rewrote the storage layout of the emitted contract. It now reports the slot saving as a hint (`applied: false`) and leaves the declaration order alone. Pass `--reorder-storage` to `build` / `verify` to apply the suggested order. Library users: `optimizeProgram(program, { reorderStorage: true })`.
+- **`pack-slots` counts slots the way solc does.** The baseline is now solc's own adjacent packing of the declared order (it never assumed one slot per variable), `constant` / `immutable` variables no longer count as slots, `string` / `bytes` are treated as full-slot dynamic types, and `Address` / `CheckedAddress` aliases are sized correctly. The pass runs after `immutable` and `constant` so those markings are visible to it. Previously the reported savings were usually fictional while the reordering was real.
+- **Attestation gate results carry an explicit `status`** (`passed` | `failed` | `skipped` | `not-applicable`) and `schemaVersion` is bumped to `2`. `passed` is `true` only when the gate actually ran clean; a skipped gate used to be written as `passed: true, detail: "skipped"`, which made "clean" indistinguishable from "never ran". Skipped gates record the operator's justification when one is given; Mythril without `--deep` is recorded as `skipped` with `optIn: true`.
+- **`secure-deploy` refuses to deploy when a gate was skipped** (`--no-smt`, `--no-slither`, `--no-fuzz`, `--no-invariants`, `--no-patterns`) unless `--allow-skipped-gates "<justification>"` is passed, matching the `@unsafe("…")` / `@allow*("…")` pattern. `secure-deploy` also accepts `--deep`.
+
+### Fixed
+- Gate 8 (invariant tests) recorded `passed: true` for every contract before forge ran, so a violated invariant blocked the deploy but the attestation still said the gate passed. The per-contract result now reflects the forge outcome, and `--skip fuzz-run` records the gate as skipped rather than passed.
+- Gate 8 now creates the forge `src/` and `test/` directories itself, so `--skip fuzz` no longer makes invariant-test emission fail on a missing directory.
+- `VerifyResult.gates` was always empty; it now contains every per-contract gate result as written to the attestation.
+
 ## [0.1.0] - 2026-08-15
 
 First release under the **Scriipture** name. Version numbering restarts at `0.1.0`; the `0.2.x` entries below are the history of this same codebase under its former name, `solidscript`.
