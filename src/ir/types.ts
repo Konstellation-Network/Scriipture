@@ -4,10 +4,34 @@ export interface SourceLocation {
   column: number;
 }
 
+/** Valid widths for `uintN` / `intN`: multiples of 8 from 8 to 256. */
+export type IntBits =
+  | 8 | 16 | 24 | 32 | 40 | 48 | 56 | 64 | 72 | 80 | 88 | 96 | 104 | 112 | 120 | 128
+  | 136 | 144 | 152 | 160 | 168 | 176 | 184 | 192 | 200 | 208 | 216 | 224 | 232 | 240 | 248 | 256;
+
+/** Valid widths for `bytesN`: 1 to 32. */
+export type BytesN =
+  | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
+  | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
+
+export type IRPrimitiveName =
+  | "bool"
+  | "string"
+  | "address"
+  | "void"
+  | "bytes"
+  | `uint${IntBits}`
+  | `int${IntBits}`
+  | `bytes${BytesN}`;
+
 export type IRType =
-  | { kind: "primitive"; name: "uint256" | "int256" | "bool" | "string" | "address" | "void" | "bytes" | "bytes32" }
+  | { kind: "primitive"; name: IRPrimitiveName }
   | { kind: "mapping"; key: IRType; value: IRType }
   | { kind: "array"; element: IRType }
+  /** A struct declared at file level next to the contract (TS `interface` or object `type`). */
+  | { kind: "struct"; name: string }
+  /** An enum declared at file level next to the contract (TS `enum`). */
+  | { kind: "enum"; name: string }
   | { kind: "custom"; name: string };
 
 export type IRExpression =
@@ -26,6 +50,12 @@ export type IRExpression =
   | { kind: "assign"; op: string; left: IRExpression; right: IRExpression }
   | { kind: "paren"; inner: IRExpression }
   | { kind: "templateString"; tag?: string; quasis: string[]; expressions: IRExpression[] }
+  /**
+   * An object literal. Lowers to `StructName({a: x, b: y})`; `structName` is
+   * filled from an `as StructName` cast or from the type of the slot the
+   * literal is assigned to (state var, typed local, return, mapping value…).
+   */
+  | { kind: "object"; structName?: string; properties: Array<{ name: string; value: IRExpression }> }
   | { kind: "raw"; text: string };
 
 export type IRStatement =
@@ -89,6 +119,20 @@ export interface IREventDecl {
   loc?: SourceLocation;
 }
 
+export interface IRStructDecl {
+  name: string;
+  fields: IRParam[];
+  natspec?: string[];
+  loc?: SourceLocation;
+}
+
+export interface IREnumDecl {
+  name: string;
+  members: string[];
+  natspec?: string[];
+  loc?: SourceLocation;
+}
+
 export interface IRFunction {
   name: string;
   isConstructor: boolean;
@@ -110,6 +154,8 @@ export interface IRContract {
   functions: IRFunction[];
   errors: IRErrorDecl[];
   events: IREventDecl[];
+  structs: IRStructDecl[];
+  enums: IREnumDecl[];
   sourceFile: string;
   natspec?: string[];
   loc?: SourceLocation;

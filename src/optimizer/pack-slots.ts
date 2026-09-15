@@ -12,12 +12,19 @@ export function storageBitSize(type: IRType): number {
     case "mapping":
     case "array":
       return SLOT_SIZE_BITS;
-    case "primitive":
-      switch (type.name) {
-        case "bool": return 8;
-        case "address": return 160;
-        default: return SLOT_SIZE_BITS; // uint256/int256/bytes32, and dynamic string/bytes
-      }
+    case "primitive": {
+      if (type.name === "bool") return 8;
+      if (type.name === "address") return 160;
+      const int = /^u?int(\d+)$/.exec(type.name);
+      if (int) return Number(int[1]);
+      const bytes = /^bytes(\d+)$/.exec(type.name);
+      if (bytes) return Number(bytes[1]) * 8;
+      return SLOT_SIZE_BITS; // dynamic string/bytes
+    }
+    case "enum":
+      return 8; // solc stores enums as uint8 (up to 256 members)
+    case "struct":
+      return SLOT_SIZE_BITS; // structs start a fresh slot and take at least one
     case "custom":
       return customTypeBits(type.name);
   }

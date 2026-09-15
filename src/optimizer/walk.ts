@@ -40,6 +40,7 @@ export function walkExpr(expr: IRExpression, visit: (e: IRExpression) => void): 
     case "assign": walkExpr(expr.left, visit); walkExpr(expr.right, visit); return;
     case "paren": walkExpr(expr.inner, visit); return;
     case "templateString": for (const e of expr.expressions) walkExpr(e, visit); return;
+    case "object": for (const p of expr.properties) walkExpr(p.value, visit); return;
   }
 }
 
@@ -53,6 +54,8 @@ export function walkExpressionsInStatement(stmt: IRStatement, visit: (e: IRExpre
     if (stmt.update) walkExpr(stmt.update, visit);
   }
   if (stmt.kind === "let" && stmt.init) walkExpr(stmt.init, visit);
+  if (stmt.kind === "revert" || stmt.kind === "emit") for (const a of stmt.args) walkExpr(a, visit);
+  if (stmt.kind === "throw") walkExpr(stmt.argument, visit);
 }
 
 export function exprContains(haystack: IRExpression, predicate: (e: IRExpression) => boolean): boolean {

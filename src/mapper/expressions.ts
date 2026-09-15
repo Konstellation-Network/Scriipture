@@ -1,4 +1,4 @@
-import type { IRExpression } from "../ir/types";
+import type { IRExpression, IRType } from "../ir/types";
 
 const BINARY_OP_MAP: Record<string, string> = {
   "===": "==",
@@ -32,6 +32,8 @@ const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
 
 export interface EmitContext {
   stateVarNames: Set<string>;
+  /** Declared type of each state variable; lets locals bound to storage infer their type and location. */
+  stateVarTypes?: Map<string, IRType>;
 }
 
 export function emitExpression(expr: IRExpression, ctx: EmitContext): string {
@@ -75,6 +77,10 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
       return `${emit(expr.left, ctx)} ${expr.op} ${emit(expr.right, ctx)}`;
     case "templateString":
       return emitTemplate(expr, ctx);
+    case "object": {
+      const fields = expr.properties.map((p) => `${p.name}: ${emit(p.value, ctx)}`).join(", ");
+      return `${expr.structName ?? ""}({${fields}})`;
+    }
     case "raw":
       return expr.text;
   }
@@ -90,6 +96,7 @@ function isAtomic(expr: IRExpression): boolean {
     case "index":
     case "call":
     case "new":
+    case "object":
       return true;
     case "paren":
       return isAtomic(expr.inner);

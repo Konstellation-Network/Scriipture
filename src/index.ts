@@ -46,6 +46,11 @@ export type {
   IRParam,
   IRErrorDecl,
   IREventDecl,
+  IRStructDecl,
+  IREnumDecl,
+  IRPrimitiveName,
+  IntBits,
+  BytesN,
   SourceLocation,
 } from "./ir/types";
 

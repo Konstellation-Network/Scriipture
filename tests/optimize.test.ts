@@ -41,7 +41,7 @@ function sv(name: string, type: IRType, mutability?: "constant" | "immutable"): 
 }
 const prim = (name: "uint256" | "bool" | "address" | "string"): IRType => ({ kind: "primitive", name });
 function contractWith(stateVars: IRStateVar[]): IRContract {
-  return { name: "T", bases: [], stateVars, functions: [], errors: [], events: [], sourceFile: "T.ts" };
+  return { name: "T", bases: [], stateVars, functions: [], errors: [], events: [], structs: [], enums: [], sourceFile: "T.ts" };
 }
 
 describe("optimizer — pack-slots", () => {

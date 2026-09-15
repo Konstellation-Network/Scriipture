@@ -4,6 +4,12 @@ All notable changes to Scriipture follow [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+- **Structs.** A file-level `interface Foo { … }` or `type Foo = { … }` next to the contract class becomes `struct Foo { … }` inside every contract in that file. Object literals lower to `Foo({a: x, b: y})`, taking the struct name from the slot they flow into (typed local, return value, state var initializer, `Map.set` / `push` on a state var, own-method argument) or from an explicit `{ … } as Foo`. Struct locals bound to storage (`const p = this.items.get(k)`) are emitted as `Foo storage p`, so writes through them reach storage. Struct params and returns get `memory`.
+- **Enums.** A file-level `enum Status { A, B }` becomes `enum Status { A, B }` inside the contract; `Status.A` emits unchanged. Member initializers are a parse diagnostic (Solidity numbers members from 0).
+- **Fixed-width integers and bytes.** `Uint8` … `Uint256`, `Int8` … `Int256` and `Bytes1` … `Bytes31` are exported from `scriipture` (as branded `bigint` / `string`) and map to the matching Solidity primitive. `Bytes` now maps to `bytes` and `Bytes32` to `bytes32` as primitives. Invalid widths (`Uint7`) are a parse diagnostic.
+- IR: `IRType` gains `struct` and `enum` kinds and the full primitive name range; `IRContract` gains `structs` and `enums`; `IRExpression` gains `object`. Source maps include struct and enum declarations.
+
 ### Changed
 - **`pack-slots` is now advisory.** It used to reorder `stateVars` in place — moving every small variable ahead of mappings, arrays and `uint256`s — which silently rewrote the storage layout of the emitted contract. It now reports the slot saving as a hint (`applied: false`) and leaves the declaration order alone. Pass `--reorder-storage` to `build` / `verify` to apply the suggested order. Library users: `optimizeProgram(program, { reorderStorage: true })`.
 - **`pack-slots` counts slots the way solc does.** The baseline is now solc's own adjacent packing of the declared order (it never assumed one slot per variable), `constant` / `immutable` variables no longer count as slots, `string` / `bytes` are treated as full-slot dynamic types, and `Address` / `CheckedAddress` aliases are sized correctly. The pass runs after `immutable` and `constant` so those markings are visible to it. Previously the reported savings were usually fictional while the reordering was real.

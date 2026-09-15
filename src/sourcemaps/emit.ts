@@ -44,6 +44,16 @@ export function buildSourceMap(contract: IRContract, solidity: string): SourceMa
     if (ln) entries.push({ solLine: ln, tsLine: fn.loc.line, symbol: fn.name });
   }
 
+  for (const st of contract.structs) {
+    const ln = seek((line) => new RegExp(`\\bstruct\\s+${escape(st.name)}\\b`).test(line));
+    if (ln) entries.push({ solLine: ln, tsLine: st.loc?.line ?? contract.loc?.line ?? 1, symbol: st.name });
+  }
+
+  for (const en of contract.enums) {
+    const ln = seek((line) => new RegExp(`\\benum\\s+${escape(en.name)}\\b`).test(line));
+    if (ln) entries.push({ solLine: ln, tsLine: en.loc?.line ?? contract.loc?.line ?? 1, symbol: en.name });
+  }
+
   for (const err of contract.errors) {
     const ln = seek((line) => new RegExp(`\\berror\\s+${escape(err.name)}\\s*\\(`).test(line));
     if (ln) entries.push({ solLine: ln, tsLine: contract.loc?.line ?? 1, symbol: err.name });

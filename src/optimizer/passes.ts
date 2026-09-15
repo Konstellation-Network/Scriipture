@@ -99,5 +99,6 @@ export function walkExpr(expr: IRExpression, visit: (e: IRExpression) => void): 
     case "assign": walkExpr(expr.left, visit); walkExpr(expr.right, visit); return;
     case "paren": walkExpr(expr.inner, visit); return;
     case "templateString": for (const e of expr.expressions) walkExpr(e, visit); return;
+    case "object": for (const p of expr.properties) walkExpr(p.value, visit); return;
   }
 }

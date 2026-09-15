@@ -4,19 +4,23 @@ import path from "node:path";
 import type {
   IRContract,
   IRDecorator,
+  IREnumDecl,
   IRErrorDecl,
   IREventDecl,
   IREventParam,
   IRExpression,
   IRFunction,
   IRParam,
+  IRPrimitiveName,
   IRProgram,
   IRStateVar,
   IRStatement,
+  IRStructDecl,
   IRSuperCall,
   IRType,
   SourceLocation,
 } from "../ir/types";
+import { walkStatements, walkExpressionsInStatement } from "../optimizer/walk";
 
 export interface ParseDiagnostic {
   message: string;
@@ -36,11 +40,28 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
     const absPath = path.resolve(filePath);
     const source = fs.readFileSync(absPath, "utf8");
     const sourceFile = ts.createSourceFile(absPath, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
-    const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics };
+    const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics, structs: new Map(), enums: new Map() };
+
+    // Structs and enums are declared at file level, next to the contract class,
+    // and may be referenced before they are declared -- so collect them first.
+    sourceFile.forEachChild((node) => {
+      if (ts.isEnumDeclaration(node)) {
+        const en = parseEnumDecl(node, ctx);
+        ctx.enums.set(en.name, en);
+      } else if (ts.isInterfaceDeclaration(node)) {
+        const st = parseStructDecl(node.name.text, node.members, node, ctx);
+        ctx.structs.set(st.name, st);
+      } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+        const st = parseStructDecl(node.name.text, node.type.members, node, ctx);
+        ctx.structs.set(st.name, st);
+      }
+    });
 
     sourceFile.forEachChild((node) => {
       if (ts.isClassDeclaration(node) && node.name) {
-        program.contracts.push(parseClass(node, ctx));
+        const contract = parseClass(node, ctx);
+        resolveStructLiterals(contract, ctx);
+        program.contracts.push(contract);
       }
     });
   }
@@ -52,6 +73,10 @@ interface ParseContext {
   sourceFile: ts.SourceFile;
   filePath: string;
   diagnostics: ParseDiagnostic[];
+  /** File-level struct declarations (TS `interface` / object `type`), by name. */
+  structs: Map<string, IRStructDecl>;
+  /** File-level `enum` declarations, by name. */
+  enums: Map<string, IREnumDecl>;
 }
 
 function loc(node: ts.Node, ctx: ParseContext): SourceLocation {
@@ -102,6 +127,10 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
     functions,
     errors,
     events,
+    // Every contract in the file gets the file's declarations; each contract
+    // is emitted to its own .sol, so nothing collides.
+    structs: Array.from(ctx.structs.values()),
+    enums: Array.from(ctx.enums.values()),
     sourceFile: ctx.filePath,
     natspec: extractNatspec(cls, ctx),
     loc: loc(cls, ctx),
@@ -288,6 +317,63 @@ function parseDecorators(node: ts.HasDecorators, ctx: ParseContext): IRDecorator
   });
 }
 
+function parseEnumDecl(node: ts.EnumDeclaration, ctx: ParseContext): IREnumDecl {
+  const members: string[] = [];
+  for (const m of node.members) {
+    members.push(m.name.getText(ctx.sourceFile));
+    if (m.initializer) {
+      ctx.diagnostics.push({
+        message: `enum ${node.name.text}.${m.name.getText(ctx.sourceFile)}: Solidity enums number their members 0, 1, 2… in declaration order; remove the initializer`,
+        loc: loc(m, ctx),
+      });
+    }
+  }
+  return { name: node.name.text, members, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) };
+}
+
+function parseStructDecl(
+  name: string,
+  members: ts.NodeArray<ts.TypeElement>,
+  node: ts.Node,
+  ctx: ParseContext,
+): IRStructDecl {
+  const fields: IRParam[] = [];
+  for (const m of members) {
+    if (!ts.isPropertySignature(m) || !m.type) {
+      ctx.diagnostics.push({
+        message: `struct ${name}: only typed property fields are supported (methods, index signatures and call signatures have no Solidity equivalent)`,
+        loc: loc(m, ctx),
+      });
+      continue;
+    }
+    if (m.questionToken) {
+      ctx.diagnostics.push({ message: `struct ${name}.${m.name.getText(ctx.sourceFile)}: Solidity struct fields cannot be optional`, loc: loc(m, ctx) });
+    }
+    fields.push({ name: m.name.getText(ctx.sourceFile), type: parseType(m.type, ctx) });
+  }
+  return { name, fields, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) };
+}
+
+/** `Uint8` … `Uint256`, `Int8` … `Int256`, `Bytes1` … `Bytes32` → the matching Solidity primitive. */
+function sizedPrimitive(name: string, node: ts.Node, ctx: ParseContext): IRType | undefined {
+  const int = /^(Uint|Int)(\d+)$/.exec(name);
+  if (int) {
+    const bits = Number(int[2]);
+    const prefix = int[1] === "Uint" ? "uint" : "int";
+    if (bits >= 8 && bits <= 256 && bits % 8 === 0) return { kind: "primitive", name: `${prefix}${bits}` as IRPrimitiveName };
+    ctx.diagnostics.push({ message: `${name}: integer width must be a multiple of 8 between 8 and 256`, loc: loc(node, ctx) });
+    return { kind: "primitive", name: `${prefix}256` };
+  }
+  const bytes = /^Bytes(\d+)$/.exec(name);
+  if (bytes) {
+    const n = Number(bytes[1]);
+    if (n >= 1 && n <= 32) return { kind: "primitive", name: `bytes${n}` as IRPrimitiveName };
+    ctx.diagnostics.push({ message: `${name}: fixed byte width must be between 1 and 32`, loc: loc(node, ctx) });
+    return { kind: "primitive", name: "bytes32" };
+  }
+  return undefined;
+}
+
 function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
   if (ts.isTypeReferenceNode(typeNode)) {
     const name = typeNode.typeName.getText(ctx.sourceFile);
@@ -299,6 +385,11 @@ function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
       return { kind: "array", element: parseType(args[0]!, ctx) };
     }
     if (name === "Address") return { kind: "primitive", name: "address" };
+    if (name === "Bytes") return { kind: "primitive", name: "bytes" };
+    const sized = sizedPrimitive(name, typeNode, ctx);
+    if (sized) return sized;
+    if (ctx.structs.has(name)) return { kind: "struct", name };
+    if (ctx.enums.has(name)) return { kind: "enum", name };
     return { kind: "custom", name };
   }
   if (ts.isArrayTypeNode(typeNode)) {
@@ -447,8 +538,21 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
   if (ts.isParenthesizedExpression(expr)) {
     return { kind: "paren", inner: parseExpression(expr.expression, ctx) };
   }
-  if (ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) {
+  if (ts.isAsExpression(expr) || ts.isSatisfiesExpression(expr)) {
+    // `{ … } as Proposal` names the struct an object literal builds.
+    if (ts.isObjectLiteralExpression(expr.expression)) {
+      const obj = parseObjectLiteral(expr.expression, ctx);
+      const t = parseType(expr.type, ctx);
+      if (t.kind === "struct") obj.structName = t.name;
+      return obj;
+    }
     return parseExpression(expr.expression, ctx);
+  }
+  if (ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr)) {
+    return parseExpression(expr.expression, ctx);
+  }
+  if (ts.isObjectLiteralExpression(expr)) {
+    return parseObjectLiteral(expr, ctx);
   }
   if (ts.isNumericLiteral(expr)) {
     return { kind: "literal", literalType: "number", value: expr.text, raw: expr.getText(ctx.sourceFile) };
@@ -534,6 +638,94 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
     return parseTemplate(expr, ctx);
   }
   return { kind: "raw", text: expr.getText(ctx.sourceFile) };
+}
+
+function parseObjectLiteral(
+  expr: ts.ObjectLiteralExpression,
+  ctx: ParseContext,
+): Extract<IRExpression, { kind: "object" }> {
+  const properties: Array<{ name: string; value: IRExpression }> = [];
+  for (const p of expr.properties) {
+    if (ts.isPropertyAssignment(p)) {
+      properties.push({ name: p.name.getText(ctx.sourceFile), value: parseExpression(p.initializer, ctx) });
+    } else if (ts.isShorthandPropertyAssignment(p)) {
+      properties.push({ name: p.name.text, value: { kind: "identifier", name: p.name.text } });
+    } else {
+      ctx.diagnostics.push({
+        message: "object literal: only `name: value` and shorthand `name` fields can become struct fields (no spreads, methods or accessors)",
+        loc: loc(p, ctx),
+      });
+    }
+  }
+  return { kind: "object", properties };
+}
+
+/**
+ * Solidity needs the struct name to build a struct (`Proposal({…})`), while a
+ * TS object literal carries none. Fill it in from the type of whatever the
+ * literal flows into: a state var initializer, a typed local, a return value,
+ * a mapping/array element, or a parameter of one of the contract's own methods.
+ * Nested literals take their type from the enclosing struct's field.
+ */
+function resolveStructLiterals(contract: IRContract, ctx: ParseContext): void {
+  const stateTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
+  const fnParams = new Map(contract.functions.map((f) => [f.name, f.params.map((p) => p.type)]));
+
+  const expect = (e: IRExpression | undefined, t: IRType | undefined): void => {
+    if (!e || !t) return;
+    const inner = e.kind === "paren" ? e.inner : e;
+    if (inner.kind !== "object" || t.kind !== "struct") return;
+    inner.structName ??= t.name;
+    const decl = ctx.structs.get(inner.structName);
+    if (!decl) return;
+    for (const p of inner.properties) expect(p.value, decl.fields.find((f) => f.name === p.name)?.type);
+  };
+  const stateVarOf = (e: IRExpression): IRType | undefined =>
+    e.kind === "member" && e.object.kind === "this" ? stateTypes.get(e.property) : undefined;
+  const elementOf = (t: IRType | undefined): IRType | undefined =>
+    t?.kind === "mapping" ? t.value : t?.kind === "array" ? t.element : undefined;
+
+  for (const v of contract.stateVars) expect(v.initializer, v.type);
+
+  for (const fn of contract.functions) {
+    walkStatements(fn.body, (s) => {
+      if (s.kind === "let") expect(s.init, s.type);
+      if (s.kind === "return") expect(s.value, fn.returnType);
+      walkExpressionsInStatement(s, (e) => {
+        if (e.kind === "assign") {
+          if (e.left.kind === "member") expect(e.right, stateVarOf(e.left));
+          if (e.left.kind === "index") expect(e.right, elementOf(stateVarOf(e.left.object)));
+        }
+        if (e.kind === "call" && e.callee.kind === "member") {
+          const target = stateVarOf(e.callee.object);
+          if (e.callee.property === "set" && e.args.length === 2) expect(e.args[1], elementOf(target));
+          if (e.callee.property === "push" && e.args.length === 1) expect(e.args[0], elementOf(target));
+          if (e.callee.object.kind === "this") {
+            const params = fnParams.get(e.callee.property);
+            if (params) e.args.forEach((a, i) => expect(a, params[i]));
+          }
+        }
+      });
+    });
+  }
+
+  // Anything still unnamed cannot be emitted as valid Solidity.
+  const report = (e: IRExpression, at: SourceLocation | undefined): void => {
+    if (e.kind === "object" && !e.structName) {
+      ctx.diagnostics.push({
+        message: `object literal has no struct type; write \`{ … } as <Struct>\` or assign it to a typed slot`,
+        loc: at ?? { file: ctx.filePath, line: 1, column: 1 },
+      });
+    }
+  };
+  for (const v of contract.stateVars) if (v.initializer) walkExprTree(v.initializer, (e) => report(e, v.loc));
+  for (const fn of contract.functions) {
+    walkStatements(fn.body, (s) => walkExpressionsInStatement(s, (e) => report(e, s.loc ?? fn.loc)));
+  }
+}
+
+function walkExprTree(expr: IRExpression, visit: (e: IRExpression) => void): void {
+  walkExpressionsInStatement({ kind: "expression", expr }, visit);
 }
 
 function parseTemplate(

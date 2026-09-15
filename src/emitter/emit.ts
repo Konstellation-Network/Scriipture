@@ -1,11 +1,13 @@
 import type {
   IRContract,
+  IREnumDecl,
   IRErrorDecl,
   IREventDecl,
   IRFunction,
   IRParam,
   IRProgram,
   IRStateVar,
+  IRStructDecl,
 } from "../ir/types";
 import { resolveContract, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
@@ -40,7 +42,8 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   const o = { ...DEFAULTS, ...opts };
   const resolution = resolveContract(contract);
   const stateVarNames = new Set(contract.stateVars.map((v) => v.name));
-  const ctx: EmitContext = { stateVarNames };
+  const stateVarTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
+  const ctx: EmitContext = { stateVarNames, stateVarTypes };
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
@@ -57,6 +60,12 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
     ? `contract ${contract.name} is ${resolution.inheritedContracts.join(", ")} {`
     : `contract ${contract.name} {`;
   lines.push(header);
+
+  for (const en of contract.enums) lines.push(...emitEnum(en));
+  if (contract.enums.length > 0) lines.push("");
+
+  for (const st of contract.structs) lines.push(...emitStruct(st));
+  if (contract.structs.length > 0) lines.push("");
 
   for (const err of contract.errors) lines.push(...emitError(err));
   if (contract.errors.length > 0) lines.push("");
@@ -142,6 +151,23 @@ function emitHelpers(set: Set<"_validateAddr" | "_pullPayment">): string[] {
     lines.push("    }");
     lines.push("");
   }
+  return lines;
+}
+
+function emitEnum(en: IREnumDecl): string[] {
+  const lines: string[] = [];
+  if (en.natspec) for (const ln of en.natspec) lines.push(`    /// ${ln}`);
+  lines.push(`    enum ${en.name} { ${en.members.join(", ")} }`);
+  return lines;
+}
+
+function emitStruct(st: IRStructDecl): string[] {
+  const lines: string[] = [];
+  if (st.natspec) for (const ln of st.natspec) lines.push(`    /// ${ln}`);
+  lines.push(`    struct ${st.name} {`);
+  // Struct fields take no data location -- "storage" yields the bare type.
+  for (const f of st.fields) lines.push(`        ${solidityType(f.type)} ${f.name};`);
+  lines.push("    }");
   return lines;
 }
 

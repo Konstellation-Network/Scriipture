@@ -265,17 +265,77 @@ mint(to: Address, amount: bigint): void {
 | `boolean` | `bool` |
 | `string` (state) | `string` |
 | `string` (param/local) | `string memory` (or `calldata` after optimizer) |
+| `Uint8` … `Uint256` | `uint8` … `uint256` (any multiple of 8) |
+| `Int8` … `Int256` | `int8` … `int256` (any multiple of 8) |
 | `Address` | `address` |
 | `CheckedAddress` | `address` (compile-time guarantee it's non-zero — see [browser-wallet flow](#9)) |
-| `Bytes32` | `bytes32` |
+| `Bytes1` … `Bytes32` | `bytes1` … `bytes32` |
 | `Bytes` | `bytes` |
 | `Map<K, V>` | `mapping(K => V)` |
 | `Array<T>` | `T[]` (storage) / `T[] memory` (memory) |
+| `interface Foo { … }` / `type Foo = { … }` (file level) | `struct Foo { … }` declared inside the contract |
+| `enum Foo { A, B }` (file level) | `enum Foo { A, B }` declared inside the contract |
 | `void` | (no return) |
 | `null` | not supported |
 | `undefined` | not supported |
 
 `bigint` is the canonical numeric type — TS forces you to write `0n` instead of `0`, which forces you to think about whether you mean "the integer 0" vs "the JS number 0." In Solidity-land all numbers are bigint-equivalent.
+
+### Fixed-width integers
+
+`bigint` is `uint256`. Annotate with `Uint8` … `Uint256` or `Int8` … `Int256` to get a narrower Solidity type. The aliases are branded `bigint`s, so literals need a cast:
+
+```ts
+import { Uint8, Uint64 } from "scriipture";
+
+@storage quorum: Uint8 = 51n as Uint8;
+@storage votes: Uint64 = 0n as Uint64;
+
+this.votes = (this.votes + 1n) as Uint64;   // → votes = (votes + 1);
+```
+
+Adjacent narrow state variables share a storage slot; `scriipture optimize` reports when a different declaration order would save slots.
+
+### Structs and enums
+
+Declare them at file level, next to the contract class. Every contract in the file gets them, emitted inside the contract body.
+
+```ts
+export enum Status { Pending, Active, Executed }
+
+export interface Proposal {
+  id: bigint;
+  proposer: Address;
+  votes: Uint64;
+  status: Status;
+}
+
+export class Governance {
+  @storage proposals: Map<bigint, Proposal> = new Map();
+
+  propose(id: bigint): void {
+    this.proposals.set(id, { id, proposer: msg.sender, votes: 0n as Uint64, status: Status.Pending });
+  }
+
+  vote(id: bigint): void {
+    const p = this.proposals.get(id)!;           // → Proposal storage p = proposals[id];
+    require(p.status === Status.Pending);
+    p.votes = (p.votes + 1n) as Uint64;         // writes through to storage
+  }
+
+  @view
+  proposalOf(id: bigint): Proposal {            // → returns (Proposal memory)
+    return this.proposals.get(id)!;
+  }
+}
+```
+
+What lowers to what:
+
+- An object literal becomes `Proposal({id: id, proposer: msg.sender, …})`. Scriipture takes the struct name from where the literal flows: a typed local, a `return` in a method returning the struct, a state var initializer, a `Map.set` / array `push` on a state var, or an argument to one of the contract's own methods. Anywhere else, write `{ … } as Proposal`. A literal it cannot name is a parse diagnostic.
+- A `const p = this.<stateVar>.get(k)` (or `[k]`, or the bare state var) whose type is a struct is emitted as a **storage reference**, so writes through `p` land in storage. Anything else is `memory`.
+- Enum members must not have initializers; Solidity numbers them from 0 in declaration order.
+- Struct fields must be plain typed properties (no methods, optional fields, index signatures).
 
 ### Built-in globals
 

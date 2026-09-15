@@ -1,4 +1,4 @@
-import type { IRStatement } from "../ir/types";
+import type { IRExpression, IRStatement, IRType } from "../ir/types";
 import { needsLocationQualifier, solidityType } from "./types";
 import { emitExpression, type EmitContext } from "./expressions";
 
@@ -67,7 +67,13 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return lines;
     }
     case "let": {
-      const typeStr = stmt.type ? solidityType(stmt.type, needsLocationQualifier(stmt.type) ? "memory" : "memory") : "uint256";
+      const type = stmt.type ?? (stmt.init ? inferTypeFromStorage(stmt.init, ctx) : undefined);
+      // A struct local bound directly to a storage slot is a reference, not a copy:
+      // `const p = this.proposals.get(id)` must become `Proposal storage p = proposals[id];`
+      // or writes through `p` would silently go to a memory copy.
+      const storageRef = type?.kind === "struct" && stmt.init !== undefined && isStorageAccess(stmt.init, ctx);
+      // solidityType's "storage" location yields the bare declaration form; a local needs the keyword spelled out.
+      const typeStr = !type ? "uint256" : storageRef ? `${solidityType(type, "storage")} storage` : solidityType(type, "memory");
       const initStr = stmt.init ? ` = ${emitExpression(stmt.init, ctx)}` : "";
       return [`${indent}${typeStr} ${stmt.name}${initStr};`];
     }
@@ -76,6 +82,43 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
     case "raw":
       return [`${indent}${stmt.text}`];
   }
+}
+
+function unwrap(expr: IRExpression): IRExpression {
+  if (expr.kind === "paren") return unwrap(expr.inner);
+  if (expr.kind === "nullish") return unwrap(expr.left);
+  return expr;
+}
+
+/** `this.<stateVar>`, `this.<stateVar>[k]`, or `this.<stateVar>.get(k)` -- a direct storage read. */
+function storageRoot(expr: IRExpression, ctx: EmitContext): { type: IRType; indexed: boolean } | undefined {
+  const e = unwrap(expr);
+  const stateVar = (m: IRExpression): IRType | undefined =>
+    m.kind === "member" && m.object.kind === "this" ? ctx.stateVarTypes?.get(m.property) : undefined;
+  const direct = stateVar(e);
+  if (direct) return { type: direct, indexed: false };
+  if (e.kind === "index") {
+    const t = stateVar(e.object);
+    if (t) return { type: t, indexed: true };
+  }
+  if (e.kind === "call" && e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) {
+    const t = stateVar(e.callee.object);
+    if (t) return { type: t, indexed: true };
+  }
+  return undefined;
+}
+
+function isStorageAccess(expr: IRExpression, ctx: EmitContext): boolean {
+  return storageRoot(expr, ctx) !== undefined;
+}
+
+function inferTypeFromStorage(expr: IRExpression, ctx: EmitContext): IRType | undefined {
+  const root = storageRoot(expr, ctx);
+  if (!root) return undefined;
+  if (!root.indexed) return root.type;
+  if (root.type.kind === "mapping") return root.type.value;
+  if (root.type.kind === "array") return root.type.element;
+  return undefined;
 }
 
 function emitForInit(init: IRStatement, ctx: EmitContext): string {
