@@ -10,15 +10,16 @@ const CUSTOM_TYPE_ALIASES: Record<string, string> = {
 export function solidityType(type: IRType, location: "storage" | "memory" | "calldata" = "storage"): string {
   switch (type.kind) {
     case "primitive": {
-      if (type.name === "string" && location !== "storage") return "string memory";
-      if (type.name === "bytes" && location !== "storage") return "bytes memory";
+      // Reference types carry their data location outside storage; "calldata"
+      // is what the calldata-params pass asks for and must survive to the output.
+      if ((type.name === "string" || type.name === "bytes") && location !== "storage") return `${type.name} ${location}`;
       return type.name;
     }
     case "mapping":
       return `mapping(${solidityType(type.key)} => ${solidityType(type.value)})`;
     case "array": {
       const base = `${solidityType(type.element)}[]`;
-      if (location !== "storage") return `${base} memory`;
+      if (location !== "storage") return `${base} ${location}`;
       return base;
     }
     case "struct":

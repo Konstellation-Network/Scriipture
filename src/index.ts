@@ -81,5 +81,8 @@ export {
   gateSkipped,
   gateNotApplicable,
   unjustifiedSkippedGates,
+  stampDeployment,
 } from "./security/attestation";
-export type { AttestationBundle, GateResult, GateStatus, ToolVersion } from "./security/attestation";
+export type { AttestationBundle, DeploymentRecord, GateResult, GateStatus, ToolVersion } from "./security/attestation";
+export { inferType, storageRoot, isZeroLiteral, emptinessTest } from "./mapper/infer";
+export type { TypeEnv } from "./mapper/infer";

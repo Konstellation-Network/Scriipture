@@ -5,6 +5,21 @@ All notable changes to Scriipture follow [Keep a Changelog](https://keepachangel
 ## [Unreleased]
 
 ### Fixed
+- **`calldata-params` never produced `calldata`.** The pass marked parameters `calldata` and reported the saving as applied, but the type mapper emitted `memory` for every data location, so no contract ever contained the word. Reference types now carry the location they were given (`string calldata`, `uint256[] calldata`, `Foo calldata`). The pass also now treats `p[i] = x`, `p.f = x` and `p++` as mutations, not just `p = x`.
+- **`a ?? b` silently dropped `b`.** `const bal = this.x.get(k) ?? 7n` emitted `bal = x[k]`. A fallback that is the type's default (`0n`, `false`, `""`, `address(0)`) is genuinely redundant in Solidity and still lowers to `a`; any other fallback now lowers to an explicit default-value test (`(a == 0 ? b : a)`, `(!a ? b : a)`, `(a == address(0) ? b : a)`, `(bytes(a).length == 0 ? b : a)`) when the type of `a` can be inferred, and is a `nullish-fallback` error when it cannot, instead of changing the program's meaning.
+- **Tuple destructuring.** `const [ok, data] = to.call("")` emitted `uint256 [ok,] = …`, which is not Solidity — so the pattern the `no-unchecked-low-level-call` rule recommends could not be written. It now emits `(bool ok, bytes memory data) = to.call("");`; omitted slots become empty components; other shapes take a tuple annotation (`const [a, b]: [bigint, boolean] = …`) and are a `destructure-shape` error without one.
+- `verify`'s generated `foundry.toml` resolved OpenZeppelin relative to the current directory; it now uses the same resolver as the compiler, so forge runs work when scriipture is an installed dependency.
+- Gate 1 counted diagnostics without a source location against no contract while still failing the gate; they now count against every contract.
+- Docs claimed the attestation was "signed"; nothing signs it. README/LANDING/details now describe what the bundle actually is, and MINTLIFY_BRIEF no longer says custom networks are unsupported.
+
+### Added
+- **`secure-deploy` stamps the deployment onto the attestation.** After the deploy transaction is mined the contract's bundle gains a `deployment` record (`network`, `address`, `txHash`, `from`, `deployedAt`) and top-level `network` / `address`, and the new fingerprint is printed. `deployCommand` returns the deployment outcome. `secure-deploy` also accepts `--skip`, `--fuzz-runs` and `--mythril-timeout`.
+- `nullish-fallback` and `destructure-shape` validator rules (see Fixed). Rule count is now 18.
+- Shared type inference (`src/mapper/infer.ts`) used by the emitter and validator: storage reads, parameters, typed locals, `msg.sender`, literals.
+- SMTChecker invariant harnesses are written to `out/smt/`, not `out/sol/`, so `compile out/sol` and Slither do not treat them as deployable contracts.
+- CI's security job runs `verify --skip fuzz,fuzz-run` so the SMTChecker gate and invariant proofs execute against the native solc it already installs.
+
+### Fixed (earlier in this release)
 - **Gate 3 (SMTChecker) never actually ran.** The model-checker settings passed `contracts: { "<file>": [] }`, which solc rejects with "Source contracts must be a non-empty array"; the gate only looked at SMT findings, not compile errors, so every run reported "0 finding(s)". On top of that the bundled solc-js (Emscripten) build cannot start the Z3 solver thread at all. Model checking now runs through a native `solc` on the PATH (imports are inlined so it needs no filesystem access), and when no solver can run the gate is recorded as **skipped** with the reason, never as clean. `scriipture doctor` says so too.
 - `scriipture audit --strict` now exits non-zero when Slither did not run instead of printing a note and passing.
 - Gates 7 and 8 no longer announce "an invariant was violated" when forge could not run at all (forge-std clone failed, compile error); the gate still fails, but the detail says what actually happened, and a half-cloned forge-std is cleaned up before retrying.

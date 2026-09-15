@@ -50,3 +50,29 @@ describe("attestation — gate status", () => {
     expect(o.noSmt).toBeFalsy();
   });
 });
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { stampDeployment, writeAttestation, type AttestationBundle } from "../src/security/attestation";
+
+describe("attestation — deployment stamp", () => {
+  it("records network, address and tx after deploy and changes the fingerprint", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-att-"));
+    const p = path.join(dir, "X.attestation.json");
+    const bundle: AttestationBundle = {
+      schemaVersion: 2, contract: "X",
+      hashes: { tsSource: "a", solSource: "b" },
+      tools: [], gates: [gatePassed("solc-compile")], optimizations: [], diagnostics: [],
+      generatedAt: "t", generatedBy: "scriipture@test",
+    };
+    const before = writeAttestation(p, bundle);
+    const after = stampDeployment(p, { network: "base-sepolia", address: "0xabc", txHash: "0xdef", deployedAt: "t2" });
+    expect(after).not.toBe(before);
+    const stored = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(stored.network).toBe("base-sepolia");
+    expect(stored.address).toBe("0xabc");
+    expect(stored.deployment).toEqual({ network: "base-sepolia", address: "0xabc", txHash: "0xdef", deployedAt: "t2" });
+    expect(stored.gates).toHaveLength(1); // nothing else touched
+  });
+});

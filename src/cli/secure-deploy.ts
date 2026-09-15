@@ -1,7 +1,7 @@
 import pc from "picocolors";
 import { verifyCommand } from "./verify";
 import { deployCommand } from "./deploy";
-import { unjustifiedSkippedGates } from "../security/attestation";
+import { stampDeployment, unjustifiedSkippedGates } from "../security/attestation";
 
 export interface SecureDeployOptions {
   network: string;
@@ -14,6 +14,9 @@ export interface SecureDeployOptions {
   noInvariants?: boolean;
   noPatterns?: boolean;
   deep?: boolean;
+  skip?: string[];
+  fuzzRuns?: number;
+  mythrilTimeout?: number;
   /** Reason for deploying with one or more gates switched off; recorded on each skipped gate. */
   allowSkippedGates?: string;
 }
@@ -45,9 +48,25 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
 
   console.log("");
   console.log(pc.bold("Stage 2/2 — deploy"));
-  await deployCommand(opts.contract, {
+  const outcome = await deployCommand(opts.contract, {
     network: opts.network,
     args: opts.args ?? [],
     artifacts: opts.artifacts,
   });
+
+  // Tie the gate results to the deployment they cleared.
+  const att = verify.attestations.find((a) => a.contract === opts.contract);
+  if (att) {
+    const fingerprint = stampDeployment(att.path, {
+      network: outcome.network,
+      address: outcome.address,
+      txHash: outcome.txHash,
+      from: outcome.from,
+      deployedAt: new Date().toISOString(),
+    });
+    console.log(`  attestation: ${att.path}`);
+    console.log(`    fingerprint: ${pc.dim(fingerprint.slice(0, 16) + "…")} (now records ${outcome.network} @ ${outcome.address})`);
+  } else {
+    console.log(pc.yellow(`  ⚠ no attestation found for ${opts.contract}; deployment not recorded in a bundle`));
+  }
 }

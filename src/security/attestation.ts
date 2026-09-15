@@ -62,11 +62,21 @@ export function unjustifiedSkippedGates<T extends GateResult>(gates: T[]): T[] {
   return gates.filter((g) => g.status === "skipped" && !g.optIn && !g.justification);
 }
 
+export interface DeploymentRecord {
+  network: string;
+  address: string;
+  txHash: string;
+  from?: string;
+  deployedAt: string;
+}
+
 export interface AttestationBundle {
   schemaVersion: 2;
   contract: string;
   network?: string;
   address?: string;
+  /** Filled in by `secure-deploy` after the deploy transaction is mined. */
+  deployment?: DeploymentRecord;
   hashes: {
     tsSource: string;
     solSource: string;
@@ -125,6 +135,20 @@ export function writeAttestation(outPath: string, bundle: AttestationBundle): st
   const json = JSON.stringify(bundle, null, 2);
   fs.writeFileSync(outPath, json, "utf8");
   return sha256(json);
+}
+
+/**
+ * Record where a verified contract actually went. The bundle is written by
+ * `verify` before the deploy exists; `secure-deploy` calls this afterwards so
+ * the attestation ties the gate results to a network and address.
+ * Returns the new fingerprint of the rewritten file.
+ */
+export function stampDeployment(attPath: string, deployment: DeploymentRecord): string {
+  const bundle = JSON.parse(fs.readFileSync(attPath, "utf8")) as AttestationBundle;
+  bundle.network = deployment.network;
+  bundle.address = deployment.address;
+  bundle.deployment = deployment;
+  return writeAttestation(attPath, bundle);
 }
 
 export function attestationFingerprint(bundle: AttestationBundle): string {

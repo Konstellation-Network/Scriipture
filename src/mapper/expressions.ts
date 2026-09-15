@@ -1,4 +1,5 @@
 import type { IRExpression, IRType } from "../ir/types";
+import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "./infer";
 
 const BINARY_OP_MAP: Record<string, string> = {
   "===": "==",
@@ -30,10 +31,12 @@ const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
   tx: true,
 };
 
-export interface EmitContext {
+export interface EmitContext extends TypeEnv {
   stateVarNames: Set<string>;
   /** Declared type of each state variable; lets locals bound to storage infer their type and location. */
   stateVarTypes?: Map<string, IRType>;
+  /** Parameters and typed locals of the function being emitted. */
+  localTypes?: Map<string, IRType>;
 }
 
 export function emitExpression(expr: IRExpression, ctx: EmitContext): string {
@@ -72,7 +75,7 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
     case "conditional":
       return `${emit(expr.test, ctx)} ? ${emit(expr.consequent, ctx)} : ${emit(expr.alternate, ctx)}`;
     case "nullish":
-      return emit(expr.left, ctx);
+      return emitNullish(expr, ctx);
     case "assign":
       return `${emit(expr.left, ctx)} ${expr.op} ${emit(expr.right, ctx)}`;
     case "templateString":
@@ -84,6 +87,22 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
     case "raw":
       return expr.text;
   }
+}
+
+/**
+ * `a ?? b`. A mapping read never yields "undefined" in Solidity, it yields the
+ * type's default, so `?? 0n` (or `?? false`, `?? ""`, `?? address(0)`) is
+ * exactly `a`. Any other fallback has to become an explicit test, or the
+ * program silently changes meaning. Types the emitter cannot test for
+ * emptiness fall back to `a`; the `nullish-fallback` validator rule reports those.
+ */
+function emitNullish(expr: Extract<IRExpression, { kind: "nullish" }>, ctx: EmitContext): string {
+  const left = emit(expr.left, ctx);
+  if (isZeroLiteral(expr.right)) return left;
+  const test = emptinessTest(inferType(expr.left, ctx));
+  if (!test) return left;
+  const leftAtom = isAtomic(expr.left) ? left : `(${left})`;
+  return `(${test.replace("$", leftAtom)} ? ${emit(expr.right, ctx)} : ${leftAtom})`;
 }
 
 function isAtomic(expr: IRExpression): boolean {

@@ -46,7 +46,7 @@ Some source material overstates what ships today. These were verified against th
 
 **Networks: five, not "any EVM chain."** `deploy` accepts exactly `base`, `base-sepolia`, `mainnet`, `sepolia`, and `anvil`. Anything else exits with `Unknown network`. This is hardcoded in `src/deploy/networks.ts`.
 
-**A custom network in the config file does not work.** `scriipture.config.mjs` has a `networks` block, and it is genuinely used for RPC URL and private-key env overrides — but `src/deploy/deployer.ts` still calls `resolveChain(network)` against the hardcoded list, so a config entry for an unsupported chain throws anyway. Do **not** write a "how to add a new chain" guide; there is no supported path today. That's why the structure above renames `concepts/multi-chain` to `concepts/networks`.
+**Custom networks in the config file now work** (an earlier version of this note said otherwise). `scriipture.config.mjs` has a `networks` block, and it is genuinely used for RPC URL and private-key env overrides — but `src/deploy/deployer.ts` still calls `resolveChain(network)` against the hardcoded list, so a config entry for an unsupported chain throws anyway. Do **not** write a "how to add a new chain" guide; there is no supported path today. That's why the structure above renames `concepts/multi-chain` to `concepts/networks`.
 
 **Older marketing copy is wrong on this point.** Earlier drafts of `LANDING.md` listed Optimism, Arbitrum, Polygon, zkSync, Linea, and Scroll. That has been corrected upstream — if you find those names in any source file, treat it as stale, not as a spec.
 

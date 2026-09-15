@@ -512,6 +512,25 @@ function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
   }
   if (ts.isVariableStatement(stmt)) {
     const first = stmt.declarationList.declarations[0];
+    if (first && ts.isArrayBindingPattern(first.name)) {
+      if (!first.initializer) {
+        ctx.diagnostics.push({ message: "destructuring declaration needs an initializer", loc: l });
+        return { kind: "raw", text: stmt.getText(ctx.sourceFile), loc: l };
+      }
+      const names = first.name.elements.map((el) =>
+        ts.isBindingElement(el) ? el.name.getText(ctx.sourceFile) : undefined);
+      const types = first.type && ts.isTupleTypeNode(first.type)
+        ? first.type.elements.map((t) => parseType(ts.isNamedTupleMember(t) ? t.type : t, ctx))
+        : undefined;
+      return {
+        kind: "destructure",
+        names,
+        types,
+        init: parseExpression(first.initializer, ctx),
+        isConst: (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0,
+        loc: l,
+      };
+    }
     if (first) {
       return {
         kind: "let",

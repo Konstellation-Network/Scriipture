@@ -1,6 +1,7 @@
 import type { IRExpression, IRStatement, IRType } from "../ir/types";
-import { needsLocationQualifier, solidityType } from "./types";
+import { solidityType } from "./types";
 import { emitExpression, type EmitContext } from "./expressions";
+import { inferType, isStorageAccess, unwrapExpr } from "./infer";
 
 export function emitStatements(stmts: IRStatement[], ctx: EmitContext, indent: string): string[] {
   const lines: string[] = [];
@@ -67,7 +68,7 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return lines;
     }
     case "let": {
-      const type = stmt.type ?? (stmt.init ? inferTypeFromStorage(stmt.init, ctx) : undefined);
+      const type = stmt.type ?? (stmt.init ? inferType(stmt.init, ctx) : undefined);
       // A struct local bound directly to a storage slot is a reference, not a copy:
       // `const p = this.proposals.get(id)` must become `Proposal storage p = proposals[id];`
       // or writes through `p` would silently go to a memory copy.
@@ -77,6 +78,14 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       const initStr = stmt.init ? ` = ${emitExpression(stmt.init, ctx)}` : "";
       return [`${indent}${typeStr} ${stmt.name}${initStr};`];
     }
+    case "destructure": {
+      const types = destructureTypes(stmt, ctx);
+      const parts = types.map((t, i) => {
+        const name = stmt.names[i];
+        return name ? `${solidityType(t, "memory")} ${name}` : "";
+      });
+      return [`${indent}(${parts.join(", ")}) = ${emitExpression(stmt.init, ctx)};`];
+    }
     case "throw":
       return [`${indent}revert();`];
     case "raw":
@@ -84,41 +93,24 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
   }
 }
 
-function unwrap(expr: IRExpression): IRExpression {
-  if (expr.kind === "paren") return unwrap(expr.inner);
-  if (expr.kind === "nullish") return unwrap(expr.left);
-  return expr;
-}
+const LOW_LEVEL_CALLS = new Set(["call", "delegatecall", "staticcall"]);
 
-/** `this.<stateVar>`, `this.<stateVar>[k]`, or `this.<stateVar>.get(k)` -- a direct storage read. */
-function storageRoot(expr: IRExpression, ctx: EmitContext): { type: IRType; indexed: boolean } | undefined {
-  const e = unwrap(expr);
-  const stateVar = (m: IRExpression): IRType | undefined =>
-    m.kind === "member" && m.object.kind === "this" ? ctx.stateVarTypes?.get(m.property) : undefined;
-  const direct = stateVar(e);
-  if (direct) return { type: direct, indexed: false };
-  if (e.kind === "index") {
-    const t = stateVar(e.object);
-    if (t) return { type: t, indexed: true };
+/** `(bool, bytes memory)` for a low-level call, else the tuple annotation, else `uint256` per slot. */
+export function destructureTypes(stmt: Extract<IRStatement, { kind: "destructure" }>, _ctx: EmitContext): IRType[] {
+  if (stmt.types && stmt.types.length > 0) {
+    const out = [...stmt.types];
+    while (out.length < stmt.names.length) out.push({ kind: "primitive", name: "uint256" });
+    return out;
   }
-  if (e.kind === "call" && e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) {
-    const t = stateVar(e.callee.object);
-    if (t) return { type: t, indexed: true };
+  if (isLowLevelCall(stmt.init)) {
+    return [{ kind: "primitive", name: "bool" }, { kind: "primitive", name: "bytes" }];
   }
-  return undefined;
+  return stmt.names.map(() => ({ kind: "primitive", name: "uint256" } as IRType));
 }
 
-function isStorageAccess(expr: IRExpression, ctx: EmitContext): boolean {
-  return storageRoot(expr, ctx) !== undefined;
-}
-
-function inferTypeFromStorage(expr: IRExpression, ctx: EmitContext): IRType | undefined {
-  const root = storageRoot(expr, ctx);
-  if (!root) return undefined;
-  if (!root.indexed) return root.type;
-  if (root.type.kind === "mapping") return root.type.value;
-  if (root.type.kind === "array") return root.type.element;
-  return undefined;
+export function isLowLevelCall(expr: IRExpression): boolean {
+  const e = unwrapExpr(expr);
+  return e.kind === "call" && e.callee.kind === "member" && LOW_LEVEL_CALLS.has(e.callee.property);
 }
 
 function emitForInit(init: IRStatement, ctx: EmitContext): string {

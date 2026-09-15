@@ -8,11 +8,13 @@ import type {
   IRProgram,
   IRStateVar,
   IRStructDecl,
+  IRType,
 } from "../ir/types";
 import { resolveContract, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
-import { needsLocationQualifier, solidityType } from "../mapper/types";
+import { solidityType } from "../mapper/types";
+import { walkStatements } from "../optimizer/walk";
 
 export interface EmitOptions {
   pragma?: string;
@@ -233,7 +235,7 @@ function emitConstructor(
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
   lines.push(`    constructor(${paramStr})${superStr} {`);
-  lines.push(...emitStatements(fn.body, ctx, "        "));
+  lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   lines.push("    }");
   return lines;
 }
@@ -248,7 +250,7 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
   const modifiers = res.modifiers.length > 0 ? " " + res.modifiers.join(" ") : "";
 
   const isVoid = fn.returnType.kind === "primitive" && fn.returnType.name === "void";
-  const returns = isVoid ? "" : ` returns (${solidityType(fn.returnType, needsLocationQualifier(fn.returnType) ? "memory" : "memory")})`;
+  const returns = isVoid ? "" : ` returns (${solidityType(fn.returnType, "memory")})`;
 
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
@@ -262,11 +264,22 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
     }
     lines.push("        }");
   } else {
-    lines.push(...emitStatements(fn.body, ctx, "        "));
+    lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   }
 
   lines.push("    }");
   return lines;
+}
+
+/** The emit context plus the types of this function's parameters and annotated locals. */
+function withLocals(ctx: EmitContext, fn: IRFunction): EmitContext {
+  const localTypes = new Map<string, IRType>();
+  for (const p of fn.params) localTypes.set(p.name, p.type);
+  walkStatements(fn.body, (s) => {
+    if (s.kind === "let" && s.type) localTypes.set(s.name, s.type);
+    if (s.kind === "destructure" && s.types) s.names.forEach((n, i) => { if (n && s.types![i]) localTypes.set(n, s.types![i]!); });
+  });
+  return { ...ctx, localTypes };
 }
 
 function paramSignature(p: IRParam): string {

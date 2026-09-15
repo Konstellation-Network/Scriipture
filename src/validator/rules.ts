@@ -11,6 +11,8 @@ import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
+import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "../mapper/infer";
+import { isLowLevelCall } from "../mapper/statements";
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -148,6 +150,11 @@ function ruleReservedIdentifiers(contract: IRContract): Diagnostic[] {
       if (stmt.kind === "let" && isSolidityReserved(stmt.name)) {
         out.push(reservedDiagnostic(stmt.name, `local variable "${stmt.name}"`, stmt.loc ?? fn.loc));
       }
+      if (stmt.kind === "destructure") {
+        for (const n of stmt.names) {
+          if (n && isSolidityReserved(n)) out.push(reservedDiagnostic(n, `local variable "${n}"`, stmt.loc ?? fn.loc));
+        }
+      }
     });
   }
 
@@ -236,7 +243,85 @@ const RULES: Rule[] = [
   ruleRequireCheckedAddress,
   ruleNoShadowedState,
   ruleConstructorIsConstructor,
+  ruleNullishFallback,
+  ruleDestructureShape,
 ];
+
+function typeEnvFor(contract: IRContract, fn: IRFunction): TypeEnv {
+  const localTypes = new Map(fn.params.map((p) => [p.name, p.type]));
+  walkStatements(fn.body, (s) => {
+    if (s.kind === "let" && s.type) localTypes.set(s.name, s.type);
+  });
+  return { stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])), localTypes };
+}
+
+/**
+ * `a ?? b` has no Solidity counterpart: a missing mapping key reads as the
+ * type's default, never as undefined. `?? 0n` (or false / "" / address(0)) is
+ * therefore a no-op and lowers to `a`. Any other fallback is lowered to an
+ * explicit emptiness test when the type of `a` is known and testable; when it
+ * is not, the fallback would be dropped, so that is an error.
+ */
+function ruleNullishFallback(contract: IRContract, fn: IRFunction): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const env = typeEnvFor(contract, fn);
+  walkStatements(fn.body, (stmt) => {
+    walkExpressionsInStatement(stmt, (e) => {
+      if (e.kind !== "nullish" || isZeroLiteral(e.right)) return;
+      const type = inferType(e.left, env);
+      const test = emptinessTest(type);
+      if (test) {
+        out.push({
+          rule: "nullish-fallback",
+          severity: "info",
+          message: `\`?? fallback\` in "${fn.name}" lowers to an explicit default-value test (${test.replace("$", "a")} ? fallback : a); the left side is evaluated twice`,
+          loc: stmt.loc ?? fn.loc,
+        });
+      } else {
+        out.push({
+          rule: "nullish-fallback",
+          severity: "error",
+          message: `\`?? fallback\` in "${fn.name}" cannot be lowered: the left side's type is ${type ? "not testable for emptiness" : "unknown"}, so the fallback would be silently dropped`,
+          loc: stmt.loc ?? fn.loc,
+          fix: "use `?? 0n` (a mapping read already defaults to zero), or write the test explicitly with an if / ternary",
+        });
+      }
+    });
+  });
+  return out;
+}
+
+/**
+ * `const [a, b] = expr` needs component types. They are known for low-level
+ * calls (`(bool, bytes memory)`) and for a tuple annotation; anything else
+ * cannot be emitted correctly.
+ */
+function ruleDestructureShape(_contract: IRContract, fn: IRFunction): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  walkStatements(fn.body, (stmt) => {
+    if (stmt.kind !== "destructure") return;
+    if (stmt.types && stmt.types.length >= stmt.names.length) return;
+    if (isLowLevelCall(stmt.init)) {
+      if (stmt.names.length > 2) {
+        out.push({
+          rule: "destructure-shape",
+          severity: "error",
+          message: `low-level call in "${fn.name}" returns (bool, bytes) but ${stmt.names.length} names are destructured`,
+          loc: stmt.loc ?? fn.loc,
+        });
+      }
+      return;
+    }
+    out.push({
+      rule: "destructure-shape",
+      severity: "error",
+      message: `destructuring in "${fn.name}" needs a tuple type annotation so the component types can be emitted`,
+      loc: stmt.loc ?? fn.loc,
+      fix: `const [${stmt.names.map((n) => n ?? "").join(", ")}]: [bigint, boolean] = …`,
+    });
+  });
+  return out;
+}
 
 /**
  * `CheckedAddress` is a TypeScript brand that is erased at emit; the only thing
@@ -622,11 +707,13 @@ function ruleNoShadowedState(contract: IRContract, fn: IRFunction): Diagnostic[]
   const stateNames = new Set(contract.stateVars.map((v) => v.name));
   const out: Diagnostic[] = [];
   walkStatements(fn.body, (stmt) => {
-    if (stmt.kind === "let" && stateNames.has(stmt.name)) {
+    const locals = stmt.kind === "let" ? [stmt.name] : stmt.kind === "destructure" ? stmt.names.filter((n): n is string => !!n) : [];
+    for (const name of locals) {
+      if (!stateNames.has(name)) continue;
       out.push({
         rule: "no-shadowed-state",
         severity: "warning",
-        message: `local "${stmt.name}" in "${fn.name}" shadows state variable`,
+        message: `local "${name}" in "${fn.name}" shadows state variable`,
         loc: stmt.loc,
       });
     }

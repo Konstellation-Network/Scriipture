@@ -18,7 +18,15 @@ export interface DeployOptions {
   verify?: boolean;
 }
 
-export async function deployCommand(input: string, opts: DeployOptions): Promise<void> {
+export interface DeployOutcome {
+  contractName: string;
+  network: string;
+  address: Hex;
+  txHash: Hex;
+  from?: Hex;
+}
+
+export async function deployCommand(input: string, opts: DeployOptions): Promise<DeployOutcome> {
   const config = await loadConfig();
   const artifactsDir = path.resolve(opts.artifacts ?? path.join(config.outDir, "artifacts"));
   const contractName = path.basename(input);
@@ -76,6 +84,8 @@ export async function deployCommand(input: string, opts: DeployOptions): Promise
   } else if (opts.network !== "anvil" && !getEtherscanKey()) {
     console.log(pc.dim(`(skip verify: set etherscan-key via 'scriipture config set etherscan-key <KEY>')`));
   }
+
+  return { contractName, network: opts.network, address, txHash, from };
 }
 
 function writeDeployLog(network: string, contractName: string, info: { address: Hex; txHash: Hex; args: unknown[]; from?: Hex }): void {

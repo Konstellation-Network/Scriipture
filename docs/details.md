@@ -59,7 +59,7 @@ What the pipeline gives you for free:
 - **Slither runs every build** (catches 70%+ of common vuln classes)
 - **Forge fuzz harnesses auto-generated** (1000+ random inputs per public method)
 - **Forge invariant tests auto-derived** from `@invariant` decorators
-- **Reproducible-build attestation** signed for auditor handoff
+- **Reproducible-build attestation** for auditor handoff — hashes, tool versions, every gate's real status, and (after `secure-deploy`) the network, address and tx it cleared. It is a JSON manifest; it is not cryptographically signed or pinned anywhere by Scriipture
 - **Source maps** for `.sol:line` → `.ts:line` stack-trace rewriting
 - **Etherscan/BaseScan verification** in one command
 - **Browser-wallet signing** so deploys never need private keys on your filesystem
@@ -264,7 +264,7 @@ mint(to: Address, amount: bigint): void {
 | `number` | `uint256` |
 | `boolean` | `bool` |
 | `string` (state) | `string` |
-| `string` (param/local) | `string memory` (or `calldata` after optimizer) |
+| `string` (param/local) | `string memory`; `string calldata` for parameters the optimizer proves are never written |
 | `Uint8` … `Uint256` | `uint8` … `uint256` (any multiple of 8) |
 | `Int8` … `Int256` | `int8` … `int256` (any multiple of 8) |
 | `Address` | `address` |
@@ -409,7 +409,7 @@ The `pack-slots` pass is **advisory**: it reports how many storage slots you wou
 
 ### `validate <input>`
 
-Static checks (16 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
+Static checks (18 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
@@ -473,6 +473,8 @@ npx scriipture secure-deploy contracts -c MyToken -n base \
 
 The justification is recorded on every skipped gate in the attestation bundle, the same way `@unsafe("…")` and `@allow*("…")` justifications are. Mythril (Gate 4) is opt-in via `--deep` and does not need a justification; it is recorded as `skipped` with `optIn: true`.
 
+After the deploy transaction is mined, `secure-deploy` rewrites the contract's attestation with a `deployment` record (`network`, `address`, `txHash`, `from`, `deployedAt`) and prints the new fingerprint, so the gate results are tied to the address they cleared. `secure-deploy` accepts the same `--skip`, `--fuzz-runs`, `--mythril-timeout` and `--deep` flags as `verify`.
+
 ### `verify-source <Contract> -n <network>`
 
 Submits source to the chain's Etherscan-family explorer via the v2 multichain API. Reads the address + constructor args from the deploy log automatically.
@@ -530,7 +532,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 16 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 18 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | native `solc` (Z3/CHC engine) | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. Needs a native `solc` on the PATH (`brew install solidity`); the bundled solc-js cannot run Z3, and the gate is then recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
@@ -736,7 +738,7 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Compile | solc | hardhat compile | forge build | **scriipture compile** |
 | Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
-| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 16 native rules) |
+| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 18 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
 | Deploy | ethers/viem script | hardhat-deploy | cast/forge | **browser-wallet first-class** |
 | Source verification | manual upload to BaseScan | hardhat-verify plugin | forge verify-contract | **auto on every deploy** |

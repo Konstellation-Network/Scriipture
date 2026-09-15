@@ -8,7 +8,7 @@ import { optimizeProgram } from "../optimizer/passes";
 import { buildSourceMap } from "../sourcemaps/emit";
 import { validateProgram } from "../validator/rules";
 import { loadConfig } from "../config/load";
-import { compileSolidity } from "../compiler/solc";
+import { compileSolidity, resolveOZRoot } from "../compiler/solc";
 import { runSlither, slitherInstalled } from "../audit/slither";
 import { runMythril, mythrilInstalled } from "../audit/mythril";
 import { resolveTool } from "../runtime/tool-paths";
@@ -119,7 +119,8 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const nativeErrors = native.filter((d) => d.severity === "error");
   const gate1Ok = nativeErrors.length === 0;
   for (const c of program.contracts) {
-    const mine = nativeErrors.filter((d) => d.loc?.file === c.sourceFile).length;
+    // A diagnostic with no location cannot be attributed, so it counts against every contract.
+    const mine = nativeErrors.filter((d) => !d.loc || d.loc.file === c.sourceFile).length;
     const detail = `${native.length} diagnostic(s), ${nativeErrors.length} error(s)`;
     record(c.name, mine === 0 ? gatePassed("native-validator", detail, native.length) : gateFailed("native-validator", detail, native.length));
   }
@@ -369,8 +370,11 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
         record(c.name, skipped("invariant-proof", `${invs.length} invariant(s) not proven (--no-smt)`));
         continue;
       }
+      // Kept out of out/sol so `compile out/sol` and Slither do not treat the harness as a deployable contract.
+      const smtDir = path.join(outDir, "smt");
+      fs.mkdirSync(smtDir, { recursive: true });
       const harnessFile = `${c.name}${SMT_HARNESS_SUFFIX}.sol`;
-      const harnessPath = path.join(solDir, harnessFile);
+      const harnessPath = path.join(smtDir, harnessFile);
       fs.writeFileSync(harnessPath, harness, "utf8");
       const r = compileSolidity({ solFiles: [path.join(solDir, `${c.name}.sol`), harnessPath], config, modelCheck: true });
       if (!r.modelChecker?.ran) {
@@ -479,6 +483,12 @@ function ensureForgeProject(root: string): boolean {
     fs.rmSync(dest, { recursive: true, force: true }); // a half-cloned tree from an earlier failure
     spawnSync("git", ["clone", "--depth", "1", "https://github.com/foundry-rs/forge-std", dest], { stdio: "inherit" });
   }
+  // Resolve OpenZeppelin the same way the compiler does, so this works when
+  // scriipture is an installed dependency and node_modules is not in cwd.
+  const ozRoot = resolveOZRoot();
+  const ozRemap = ozRoot
+    ? `"@openzeppelin/contracts/=${ozRoot}/",`
+    : `"@openzeppelin/=${path.resolve("node_modules/@openzeppelin")}/",`;
   const toml = `[profile.default]
 src = "src"
 test = "test"
@@ -487,7 +497,7 @@ libs = ["lib"]
 solc = "0.8.20"
 optimizer = true
 remappings = [
-  "@openzeppelin/=${path.resolve("node_modules/@openzeppelin")}/",
+  ${ozRemap}
   "forge-std/=lib/forge-std/src/"
 ]
 `;

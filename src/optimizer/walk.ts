@@ -54,6 +54,7 @@ export function walkExpressionsInStatement(stmt: IRStatement, visit: (e: IRExpre
     if (stmt.update) walkExpr(stmt.update, visit);
   }
   if (stmt.kind === "let" && stmt.init) walkExpr(stmt.init, visit);
+  if (stmt.kind === "destructure") walkExpr(stmt.init, visit);
   if (stmt.kind === "revert" || stmt.kind === "emit") for (const a of stmt.args) walkExpr(a, visit);
   if (stmt.kind === "throw") walkExpr(stmt.argument, visit);
 }

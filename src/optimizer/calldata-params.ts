@@ -12,7 +12,14 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
     const mutated = new Set<string>();
     walkStatements(fn.body, (stmt) => {
       walkExpressionsInStatement(stmt, (e: IRExpression) => {
-        if (e.kind === "assign" && e.left.kind === "identifier") mutated.add(e.left.name);
+        if (e.kind === "assign") {
+          const root = rootIdentifier(e.left);
+          if (root) mutated.add(root);
+        }
+        if (e.kind === "unary" && (e.op === "++" || e.op === "--")) {
+          const root = rootIdentifier(e.operand);
+          if (root) mutated.add(root);
+        }
         if (e.kind === "call" && e.callee.kind === "member") {
           if (e.callee.object.kind === "identifier" &&
               (e.callee.property === "push" || e.callee.property === "pop")) {
@@ -36,6 +43,15 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
   }
 
   return changes;
+}
+
+/** `a`, `a[i]`, `a.b[i].c` → "a"; anything not rooted at a plain identifier → undefined. */
+function rootIdentifier(e: IRExpression): string | undefined {
+  if (e.kind === "identifier") return e.name;
+  if (e.kind === "index") return rootIdentifier(e.object);
+  if (e.kind === "member") return rootIdentifier(e.object);
+  if (e.kind === "paren") return rootIdentifier(e.inner);
+  return undefined;
 }
 
 function isCalldataCandidate(p: IRParam): boolean {
