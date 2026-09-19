@@ -76,7 +76,7 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
       "-o", "jsonv2",
     ];
 
-    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, env: process.env });
     let parsed: any;
     try {
       parsed = JSON.parse(proc.stdout || "");

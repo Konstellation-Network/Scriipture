@@ -155,7 +155,7 @@ export function compileSolidity({ solFiles, config, modelCheck = false }: Compil
     // Native solc gets every import inlined so it needs no filesystem access.
     inlineImports(sources);
     inputJson = JSON.stringify({ language: "Solidity", sources, settings });
-    const r = spawnSync(native.path, ["--standard-json"], { input: inputJson, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    const r = spawnSync(native.path, ["--standard-json"], { input: inputJson, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: process.env });
     // A crash, an OOM kill, a maxBuffer overflow or a failed spawn all leave
     // stdout empty, and "" || "{}" parses as "no errors" -- a clean run.
     const died = r.error
@@ -270,10 +270,10 @@ export function probeModelChecker(config: Config): ModelCheckerStatus {
 
 /** A native `solc` binary on the PATH, if any. */
 export function nativeSolc(): { path: string; version: string } | null {
-  const which = spawnSync(process.platform === "win32" ? "where" : "which", ["solc"], { encoding: "utf8" });
+  const which = spawnSync(process.platform === "win32" ? "where" : "which", ["solc"], { encoding: "utf8", env: process.env });
   const p = (which.stdout || "").split("\n")[0]?.trim();
   if (which.status !== 0 || !p) return null;
-  const v = spawnSync(p, ["--version"], { encoding: "utf8" });
+  const v = spawnSync(p, ["--version"], { encoding: "utf8", env: process.env });
   if (v.status !== 0) return null;
   const version = (v.stdout || "").split("\n").find((l) => /^Version:/.test(l))?.replace(/^Version:\s*/, "") ?? "unknown";
   return { path: p, version };

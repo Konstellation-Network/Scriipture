@@ -61,7 +61,7 @@ export async function runSlither(solFiles: string[], sourcemaps: SourceMap[]): P
     const args = [...tool.argPrefix, file, "--json", "-"];
     if (remaps) args.push("--solc-remaps", remaps);
     args.push("--exclude-informational", "--exclude-low");
-    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, env: process.env });
 
     let parsed: any;
     try {

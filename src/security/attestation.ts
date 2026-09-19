@@ -106,7 +106,7 @@ export function collectToolVersions(): ToolVersion[] {
 }
 
 function probe(cmd: string, flag: string): string | null {
-  const r = spawnSync(cmd, [flag], { encoding: "utf8" });
+  const r = spawnSync(cmd, [flag], { encoding: "utf8", env: process.env });
   if (r.status !== 0) return null;
   return (r.stdout || r.stderr).split("\n")[0]?.trim() ?? null;
 }

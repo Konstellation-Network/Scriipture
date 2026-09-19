@@ -146,7 +146,7 @@ export async function doctorCommand(opts: DoctorOptions = {}): Promise<void> {
 }
 
 function probeCmd(cmd: string, flag: string, hint: string): { ok: boolean; version?: string; hint?: string } {
-  const r = spawnSync(cmd, [flag], { encoding: "utf8" });
+  const r = spawnSync(cmd, [flag], { encoding: "utf8", env: process.env });
   if (r.status !== 0) return { ok: false, hint };
   const v = ((r.stdout || r.stderr || "").split("\n")[0] ?? "").trim();
   return { ok: true, version: v };
