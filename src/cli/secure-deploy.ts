@@ -46,6 +46,16 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
     }
   }
 
+  // Check this before deploying, not after: a name that has no attestation
+  // must not reach the chain and then be reported as unrecordable.
+  const att = verify.attestations.find((a) => a.contract === opts.contract);
+  if (!att) {
+    const known = verify.attestations.map((a) => a.contract).join(", ") || "none";
+    console.error(pc.red(`\n✗ no attestation was written for "${opts.contract}"; refusing to deploy something the gates did not cover.`));
+    console.error(pc.red(`  verified in this run: ${known}`));
+    process.exit(1);
+  }
+
   console.log("");
   console.log(pc.bold("Stage 2/2 — deploy"));
   const args = opts.args ?? [];
@@ -60,13 +70,6 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
   });
 
   // Tie the gate results to the deployment they cleared.
-  const att = verify.attestations.find((a) => a.contract === opts.contract);
-  if (!att) {
-    console.error(pc.red(`\n✗ no attestation was written for ${opts.contract}; refusing to leave an unrecorded deploy unreported.`));
-    console.error(pc.red(`  deployed at ${outcome.address} on ${outcome.network} (tx ${outcome.txHash}) — record this by hand.`));
-    process.exit(1);
-  }
-
   try {
     const fingerprint = stampDeployment(att.path, {
       network: outcome.network,
@@ -96,5 +99,5 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
     throw err;
   }
 
-  await maybeVerifySource(outcome, args);
+  await maybeVerifySource(outcome);
 }

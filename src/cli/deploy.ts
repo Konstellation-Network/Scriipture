@@ -32,6 +32,8 @@ export interface DeployOutcome {
   address: Hex;
   txHash: Hex;
   from?: Hex;
+  /** Constructor arguments as they were decoded and sent, not as typed on the command line. */
+  args: unknown[];
   /** sha256 of the artifact's deployedBytecode -- what was actually sent. */
   artifactDeployedBytecode: string;
   /** sha256 of eth_getCode at the address, when the node could be reached. */
@@ -96,12 +98,13 @@ export async function deployCommand(input: string, opts: DeployOptions): Promise
     address,
     txHash,
     from,
+    args,
     artifactDeployedBytecode: sha256(artifact.deployedBytecode),
     onchainDeployedBytecode,
     onchainMatchesArtifact: onchainCode ? onchainCode === artifact.deployedBytecode : undefined,
   };
 
-  if (!opts.deferSourceVerify) await maybeVerifySource(outcome, args, opts.verify);
+  if (!opts.deferSourceVerify) await maybeVerifySource(outcome, opts.verify);
 
   return outcome;
 }
@@ -111,12 +114,13 @@ export async function deployCommand(input: string, opts: DeployOptions): Promise
  * network is not a local devnet, unless `explicit` says otherwise.
  * Separate from `deployCommand` so a caller can record the deployment first.
  */
-export async function maybeVerifySource(outcome: DeployOutcome, args: unknown[], explicit?: boolean): Promise<void> {
+export async function maybeVerifySource(outcome: DeployOutcome, explicit?: boolean): Promise<void> {
   const { getEtherscanKey } = await import("../config/user-store");
   const shouldVerify = explicit ?? (!!getEtherscanKey() && outcome.network !== "anvil");
   if (shouldVerify) {
     const { verifySourceCommand } = await import("./verify-source");
-    await verifySourceCommand(outcome.contractName, { network: outcome.network, address: outcome.address, args });
+    // outcome.args, not the raw CLI strings: Etherscan needs the values that were encoded.
+    await verifySourceCommand(outcome.contractName, { network: outcome.network, address: outcome.address, args: outcome.args });
   } else if (outcome.network !== "anvil" && !getEtherscanKey()) {
     console.log(pc.dim(`(skip verify: set etherscan-key via 'scriipture config set etherscan-key <KEY>')`));
   }

@@ -70,11 +70,12 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
         if (e.property === "coinbase") return { kind: "primitive", name: "address" };
         return UINT256;
       }
-      if (e.property === "length") return UINT256;
       const objType = inferType(e.object, env);
       if (objType?.kind === "struct") {
-        return env.structs?.get(objType.name)?.fields.find((f) => f.name === e.property)?.type;
+        const field = env.structs?.get(objType.name)?.fields.find((f) => f.name === e.property);
+        if (field) return field.type; // a struct may legitimately have a field called `length`
       }
+      if (e.property === "length") return UINT256;
       return undefined;
     }
     case "index":
