@@ -86,5 +86,5 @@ export {
   DeploymentBytecodeMismatch,
 } from "./security/attestation";
 export type { AttestationBundle, DeploymentRecord, GateResult, GateStatus, ToolVersion } from "./security/attestation";
-export { inferType, storageRoot, isStorageAccess, isReferenceType, isZeroLiteral, emptinessTest, hasSideEffects, localDeclaration, functionLocals, collectLocalTypes, typeEnvFor, destructureTypes, isLowLevelCall } from "./mapper/infer";
-export type { TypeEnv } from "./mapper/infer";
+export { inferType, storageRoot, isStorageAccess, isReferenceType, isZeroLiteral, emptinessTest, hasSideEffects, localDeclaration, declareLocal, enterScope, walkScoped, functionScope, collectLocalTypes, typeEnvFor, destructureTypes, isLowLevelCall } from "./mapper/infer";
+export type { TypeEnv, Scope } from "./mapper/infer";

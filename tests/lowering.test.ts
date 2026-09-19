@@ -9,6 +9,7 @@ import { validateProgram } from "../src/validator/rules";
 import { compileSolidity } from "../src/compiler/solc";
 import { ConfigSchema } from "../src/config/schema";
 import { generateFuzzHarness } from "../src/security/fuzz-gen";
+import { collectLocalTypes, typeEnvFor } from "../src/mapper/infer";
 
 const ROOT = path.resolve(__dirname, "..");
 const FIXTURE = path.join(ROOT, "tests/contracts/Lowering.ts");
@@ -158,6 +159,59 @@ describe("locals bound to storage paths", () => {
     optimizeProgram(program);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-storagerefs-"));
     const file = path.join(dir, "StorageRefs.sol");
+    fs.writeFileSync(file, emitProgram(program)[0]!.solidity, "utf8");
+    const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
+    expect(r.errors).toEqual([]);
+  }, 60_000);
+});
+
+describe("block-scoped locals", () => {
+  const FIXTURE_SCOPED = path.join(ROOT, "tests/contracts/ScopedLocals.ts");
+  const solOf = () => emitProgram(parseContractFiles([FIXTURE_SCOPED]).program)[0]!.solidity;
+
+  it("types a same-named local per branch, storage first", () => {
+    const sol = solOf();
+    const [voteBody] = sol.split("function voteRev");
+    expect(voteBody).toContain("Proposal storage p = proposals[id];\n            Meta storage m = p.meta;");
+    expect(voteBody).toContain("Proposal memory p = other;\n            Meta memory m = p.meta;");
+  });
+
+  it("types a same-named local per branch, memory first", () => {
+    const sol = solOf();
+    const voteRevBody = sol.split("function voteRev")[1]!.split("function voteEither")[0]!;
+    expect(voteRevBody).toContain("Proposal memory p = other;\n            Meta memory m = p.meta;");
+    expect(voteRevBody).toContain("Proposal storage p = proposals[id];\n            Meta storage m = p.meta;");
+  });
+
+  it("binds a ternary of two storage paths as a storage pointer", () => {
+    expect(solOf()).toContain("Proposal storage p = useA ? proposals[1] : proposals[2];");
+  });
+
+  it("does not type a struct from a ternary that mixes storage and memory", () => {
+    // Neither binding is faithful, so the local is left untyped rather than silently copied.
+    const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/MixedTernary.ts")]);
+    const sol = emitProgram(program)[0]!.solidity;
+    expect(sol).not.toContain("Proposal memory p = useA");
+    expect(sol).not.toContain("Proposal storage p = useA");
+  });
+
+  it("scopes a loop variable to its loop", () => {
+    expect(solOf()).toContain("for (uint256 i = 0; i < n; i++) {");
+  });
+
+  it("collectLocalTypes still lists every local flat, for tooling", () => {
+    const { program } = parseContractFiles([FIXTURE_SCOPED]);
+    const count = program.contracts[0]!.functions.find((f) => f.name === "count")!;
+    const types = collectLocalTypes(count, typeEnvFor(program.contracts[0]!, count));
+    expect([...types.keys()].sort()).toEqual(["i", "n", "total"]);
+  });
+
+  it("the fixture compiles under solc", () => {
+    const { program, diagnostics } = parseContractFiles([FIXTURE_SCOPED]);
+    expect(diagnostics).toEqual([]);
+    optimizeProgram(program);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-scoped-"));
+    const file = path.join(dir, "ScopedLocals.sol");
     fs.writeFileSync(file, emitProgram(program)[0]!.solidity, "utf8");
     const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
     expect(r.errors).toEqual([]);

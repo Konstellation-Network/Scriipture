@@ -40,6 +40,12 @@ export function storageRoot(expr: IRExpression, env: TypeEnv): { type: IRType; i
     const t = env.storageLocals?.has(e.name) ? env.localTypes?.get(e.name) : undefined;
     return t ? { type: t, indexed: false } : undefined;
   }
+  if (e.kind === "conditional") {
+    // `cond ? proposals[a] : proposals[b]` is a storage pointer in Solidity too.
+    const a = storageRoot(e.consequent, env);
+    const b = storageRoot(e.alternate, env);
+    return a && b ? { type: a.type, indexed: true } : undefined;
+  }
   let inner: IRExpression | undefined;
   if (e.kind === "index" || e.kind === "member") inner = e.object;
   else if (e.kind === "call" && e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) inner = e.callee.object;
@@ -99,8 +105,14 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
         return elementOf(inferType(e.callee.object, env));
       }
       return undefined;
-    case "conditional":
-      return inferType(e.consequent, env) ?? inferType(e.alternate, env);
+    case "conditional": {
+      const type = inferType(e.consequent, env) ?? inferType(e.alternate, env);
+      // A struct or array from a ternary with one storage branch and one memory
+      // branch has no faithful binding: a `storage` local cannot hold the memory
+      // side, a `memory` local would drop writes meant for the storage side.
+      if (isReferenceType(type) && isStorageAccess(e.consequent, env) !== isStorageAccess(e.alternate, env)) return undefined;
+      return type;
+    }
     case "literal":
       if (e.literalType === "boolean") return { kind: "primitive", name: "bool" };
       if (e.literalType === "string") return { kind: "primitive", name: "string" };
@@ -146,7 +158,7 @@ type LetStatement = Extract<IRStatement, { kind: "let" }>;
  * What a `let` declares: its annotated type, else the inferred type of its
  * initializer; and whether it aliases storage. `const m = this.proposals.get(id).meta`
  * must be `Meta storage m`, or `m.votes = …` would write to a memory copy and
- * be lost. The emitter and `functionLocals` both go through here so they
+ * be lost. The emitter and `declareLocal` both go through here so they
  * cannot disagree about a local.
  */
 export function localDeclaration(stmt: LetStatement, env: TypeEnv): { type?: IRType; storageRef: boolean } {
@@ -155,46 +167,116 @@ export function localDeclaration(stmt: LetStatement, env: TypeEnv): { type?: IRT
   return { type, storageRef };
 }
 
+/** A `TypeEnv` whose local maps are guaranteed present, so declarations can be added in place. */
+export interface Scope extends TypeEnv {
+  localTypes: Map<string, IRType>;
+  storageLocals: Set<string>;
+}
+
 /**
- * Types of a function's parameters and locals -- annotated `let`/`const`,
- * `let`/`const` whose initializer can be typed, destructured names -- and
- * which of them alias storage. The emitter and the validator must agree on
- * this, or one reports an error the other does not make.
+ * A child scope of `env`: the same state variables and structs, with copies
+ * of the local maps, so what a block declares does not leak into a sibling
+ * block. `const p = this.items[i]` in one branch of an `if` must not make the
+ * `p` in the other branch a storage pointer.
  */
-export function functionLocals(fn: IRFunction, env: TypeEnv): { localTypes: Map<string, IRType>; storageLocals: Set<string> } {
-  const localTypes = new Map<string, IRType>();
-  const storageLocals = new Set<string>();
-  const scope: TypeEnv = { ...env, localTypes, storageLocals };
-  for (const p of fn.params) {
-    localTypes.set(p.name, p.type);
-    if (p.location === "storage") storageLocals.add(p.name);
+export function enterScope<T extends TypeEnv>(env: T): T & Scope {
+  return { ...env, localTypes: new Map(env.localTypes), storageLocals: new Set(env.storageLocals) };
+}
+
+/**
+ * Add what `stmt` declares to `scope`, in place. Call it after the statement
+ * has been visited or emitted: an initializer is evaluated in the scope before
+ * its own declaration. A `let` whose type is unknown still shadows an outer
+ * local of the same name.
+ */
+export function declareLocal(stmt: IRStatement, scope: Scope): void {
+  if (stmt.kind === "let") {
+    const { type, storageRef } = localDeclaration(stmt, scope);
+    if (type) scope.localTypes.set(stmt.name, type);
+    else scope.localTypes.delete(stmt.name);
+    if (storageRef) scope.storageLocals.add(stmt.name);
+    else scope.storageLocals.delete(stmt.name);
   }
-  // Statements are visited in source order, so an initializer sees the locals declared before it.
-  walkStatements(fn.body, (s) => {
-    if (s.kind === "let") {
-      const { type, storageRef } = localDeclaration(s, scope);
-      if (type) localTypes.set(s.name, type);
-      if (storageRef) storageLocals.add(s.name);
-      else storageLocals.delete(s.name);
-    }
-    if (s.kind === "destructure") {
-      const types = destructureTypes(s);
-      s.names.forEach((n, i) => { if (n && types[i]) localTypes.set(n, types[i]!); });
-    }
-  });
-  return { localTypes, storageLocals };
+  if (stmt.kind === "destructure") {
+    const types = destructureTypes(stmt);
+    stmt.names.forEach((n, i) => {
+      if (!n) return;
+      if (types[i]) scope.localTypes.set(n, types[i]!);
+      scope.storageLocals.delete(n);
+    });
+  }
 }
 
-export function collectLocalTypes(fn: IRFunction, env: TypeEnv = {}): Map<string, IRType> {
-  return functionLocals(fn, env).localTypes;
+/**
+ * Pre-order walk with block scoping. `visit(stmt, scope)` sees the parameters
+ * and every local declared before `stmt` in its own block or an enclosing one,
+ * and nothing from a sibling block. A `for` initializer is scoped to the loop
+ * and visited as a statement of its own, before the `for` itself. The emitter
+ * keeps scope the same way, so the two agree about every local.
+ */
+export function walkScoped(stmts: IRStatement[], env: TypeEnv, visit: (stmt: IRStatement, scope: Scope) => void): void {
+  const scope = enterScope(env);
+  for (const s of stmts) {
+    if (s.kind === "for") {
+      const loop = enterScope(scope);
+      if (s.init) {
+        visit(s.init, loop);
+        declareLocal(s.init, loop);
+      }
+      visit(s, loop);
+      walkScoped(s.body, loop, visit);
+      continue;
+    }
+    visit(s, scope);
+    if (s.kind === "if") {
+      walkScoped(s.then, scope, visit);
+      if (s.else) walkScoped(s.else, scope, visit);
+    }
+    if (s.kind === "while" || s.kind === "block" || s.kind === "unchecked") walkScoped(s.body, scope, visit);
+    declareLocal(s, scope);
+  }
 }
 
-export function typeEnvFor(contract: IRContract, fn: IRFunction): TypeEnv {
-  const env: TypeEnv = {
+/**
+ * The scope at the top of a function: `env` plus its parameters (a `storage`
+ * parameter is a storage pointer). Locals are added per block by `walkScoped`
+ * -- or by the emitter as it goes -- not here, since a flat, function-wide
+ * map lets a same-named local in one branch of an `if` decide the type of the
+ * one in the other.
+ */
+export function functionScope<T extends TypeEnv>(env: T, fn: IRFunction): T & Scope {
+  return {
+    ...env,
+    localTypes: new Map(fn.params.map((p) => [p.name, p.type])),
+    storageLocals: new Set(fn.params.filter((p) => p.location === "storage").map((p) => p.name)),
+  };
+}
+
+export function typeEnvFor(contract: IRContract, fn: IRFunction): Scope {
+  return functionScope({
     stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])),
     structs: new Map(contract.structs.map((s) => [s.name, s])),
-  };
-  return { ...env, ...functionLocals(fn, env) };
+  }, fn);
+}
+
+/**
+ * Every parameter and local of a function in one flat map, last declaration
+ * of a name winning. Convenient for tooling; not what the emitter or the
+ * validator use, because it cannot tell two same-named locals apart.
+ */
+export function collectLocalTypes(fn: IRFunction, env: TypeEnv = {}): Map<string, IRType> {
+  const all = new Map<string, IRType>(fn.params.map((p) => [p.name, p.type]));
+  walkScoped(fn.body, env, (stmt, scope) => {
+    if (stmt.kind !== "let" && stmt.kind !== "destructure") return;
+    const declared = enterScope(scope);
+    declareLocal(stmt, declared);
+    const names = stmt.kind === "let" ? [stmt.name] : stmt.names.filter((n): n is string => !!n);
+    for (const n of names) {
+      const t = declared.localTypes.get(n);
+      if (t) all.set(n, t);
+    }
+  });
+  return all;
 }
 
 /** The literal a TS `?? fallback` is redundant against: Solidity's default value for the type. */

@@ -1,7 +1,7 @@
 import type { IRContract, IRExpression, IRFunction, IRParam } from "../ir/types";
 import type { OptimizationChange } from "./passes";
 import { resolveFunctionDecorators } from "../mapper/decorators";
-import { inferType, isStorageAccess, typeEnvFor, type TypeEnv } from "../mapper/infer";
+import { inferType, isStorageAccess, typeEnvFor, walkScoped } from "../mapper/infer";
 import { needsLocationQualifier } from "../mapper/types";
 import { walkExpressionsInStatement, walkStatements } from "./walk";
 
@@ -34,6 +34,7 @@ function internallyCalledFunctions(contract: IRContract): Set<string> {
 export function calldataParams(contract: IRContract): OptimizationChange[] {
   const changes: OptimizationChange[] = [];
   const internallyCalled = internallyCalledFunctions(contract);
+  const mutated = mutatedParams(contract);
 
   for (const fn of contract.functions) {
     if (fn.isConstructor) continue;
@@ -44,33 +45,12 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
     if (visibility === "internal" || visibility === "private") continue;
     if (internallyCalled.has(fn.name)) continue;
 
-    const mutated = new Set<string>();
-    walkStatements(fn.body, (stmt) => {
-      walkExpressionsInStatement(stmt, (e: IRExpression) => {
-        if (e.kind === "assign") {
-          const root = rootIdentifier(e.left);
-          if (root) mutated.add(root);
-        }
-        if (e.kind === "unary" && (e.op === "++" || e.op === "--" || e.op === "delete")) {
-          const root = rootIdentifier(e.operand);
-          if (root) mutated.add(root);
-        }
-        if (e.kind === "call" && e.callee.kind === "member") {
-          // `p.push(x)` but also `p[i].push(x)` and `p[i].j.pop()`.
-          if (e.callee.property === "push" || e.callee.property === "pop" || e.callee.property === "delete") {
-            const root = rootIdentifier(e.callee.object);
-            if (root) mutated.add(root);
-          }
-        }
-      });
-    });
-
     const againstStorage = paramsBranchingAgainstStorage(contract, fn);
 
     for (const p of fn.params) {
       if (p.location) continue;
       if (!isCalldataCandidate(p)) continue;
-      if (mutated.has(p.name)) continue;
+      if (mutated.get(fn.name)?.has(p.name)) continue;
       if (againstStorage.has(p.name)) continue;
       p.location = "calldata";
       changes.push({
@@ -84,6 +64,81 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
   return changes;
 }
 
+/** Names written to in a function body: `p = …`, `p[i] = …`, `p.f++`, `delete p[i]`, `p[i].push(x)`. */
+function directlyMutated(fn: IRFunction): Set<string> {
+  const out = new Set<string>();
+  walkStatements(fn.body, (stmt) => {
+    walkExpressionsInStatement(stmt, (e: IRExpression) => {
+      if (e.kind === "assign") {
+        const root = rootIdentifier(e.left);
+        if (root) out.add(root);
+      }
+      if (e.kind === "unary" && (e.op === "++" || e.op === "--" || e.op === "delete")) {
+        const root = rootIdentifier(e.operand);
+        if (root) out.add(root);
+      }
+      if (e.kind === "call" && e.callee.kind === "member") {
+        // `p.push(x)` but also `p[i].push(x)` and `p[i].j.pop()`.
+        if (e.callee.property === "push" || e.callee.property === "pop" || e.callee.property === "delete") {
+          const root = rootIdentifier(e.callee.object);
+          if (root) out.add(root);
+        }
+      }
+    });
+  });
+  return out;
+}
+
+/**
+ * Per function, the parameters it writes to -- directly, or by passing them to
+ * one of the contract's own functions that writes to the matching parameter.
+ * The second case matters because a `calldata` argument is *copied* into a
+ * `memory` parameter: with `bump(values)` writing `values[0]`, a caller whose
+ * `values` is calldata would no longer see the write, where TypeScript (and
+ * a memory parameter) would. Closed under calls, to a fixed point.
+ */
+function mutatedParams(contract: IRContract): Map<string, Set<string>> {
+  const byName = new Map(contract.functions.map((f) => [f.name, f]));
+  const mutated = new Map(contract.functions.map((f) => [f.name, directlyMutated(f)]));
+
+  // Own-function calls whose arguments are rooted at a reference-typed parameter of the caller.
+  const flows: Array<{ caller: string; param: string; callee: string; index: number }> = [];
+  for (const fn of contract.functions) {
+    const params = new Set(fn.params.map((p) => p.name));
+    walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
+      walkExpressionsInStatement(stmt, (e) => {
+        if (e.kind !== "call") return;
+        const callee = e.callee.kind === "member" && e.callee.object.kind === "this" ? e.callee.property
+          : e.callee.kind === "identifier" ? e.callee.name : undefined;
+        if (!callee || !byName.has(callee)) return;
+        e.args.forEach((arg, index) => {
+          const root = rootIdentifier(arg);
+          if (!root || !params.has(root)) return;
+          // A value-typed element (`values[0]` of `bigint[]`) is copied whatever the location.
+          const type = inferType(arg, scope);
+          if (type && !needsLocationQualifier(type)) return;
+          flows.push({ caller: fn.name, param: root, callee, index });
+        });
+      });
+    });
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const f of flows) {
+      const target = byName.get(f.callee)?.params[f.index]?.name;
+      if (!target || !mutated.get(f.callee)?.has(target)) continue;
+      const set = mutated.get(f.caller)!;
+      if (!set.has(f.param)) {
+        set.add(f.param);
+        changed = true;
+      }
+    }
+  }
+  return mutated;
+}
+
 /**
  * Parameters that a ternary would have to unify with a storage value. solc
  * accepts `cond ? memoryValue : storageValue` but not `cond ? calldataValue :
@@ -94,16 +149,15 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
  */
 function paramsBranchingAgainstStorage(contract: IRContract, fn: IRFunction): Set<string> {
   const params = new Set(fn.params.map((p) => p.name));
-  const env: TypeEnv = typeEnvFor(contract, fn);
   const out = new Set<string>();
-  const check = (branch: IRExpression, sibling: IRExpression) => {
-    const root = rootIdentifier(branch);
-    if (!root || !params.has(root) || !isStorageAccess(sibling, env)) return;
-    // Unknown type: assume the worst, keeping memory costs gas rather than a build.
-    const type = inferType(branch, env);
-    if (!type || needsLocationQualifier(type)) out.add(root);
-  };
-  walkStatements(fn.body, (stmt) => {
+  walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
+    const check = (branch: IRExpression, sibling: IRExpression) => {
+      const root = rootIdentifier(branch);
+      if (!root || !params.has(root) || !isStorageAccess(sibling, scope)) return;
+      // Unknown type: assume the worst, keeping memory costs gas rather than a build.
+      const type = inferType(branch, scope);
+      if (!type || needsLocationQualifier(type)) out.add(root);
+    };
     walkExpressionsInStatement(stmt, (e) => {
       if (e.kind === "nullish") { check(e.left, e.right); check(e.right, e.left); }
       if (e.kind === "conditional") { check(e.consequent, e.alternate); check(e.alternate, e.consequent); }
