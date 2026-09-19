@@ -11,7 +11,7 @@ import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
-import { emptinessTest, inferType, isLowLevelCall, isZeroLiteral, typeEnvFor } from "../mapper/infer";
+import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, typeEnvFor } from "../mapper/infer";
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -251,7 +251,9 @@ const RULES: Rule[] = [
  * type's default, never as undefined. `?? 0n` (or false / "" / address(0)) is
  * therefore a no-op and lowers to `a`. Any other fallback is lowered to an
  * explicit emptiness test when the type of `a` is known and testable; when it
- * is not, the fallback would be dropped, so that is an error.
+ * is not, the fallback would be dropped, so that is an error. The test reads
+ * `a` twice, so an `a` with side effects (a call, `++`) is an error as well:
+ * `this.queue.get(this.pop()) ?? 1n` would pop twice.
  */
 function ruleNullishFallback(contract: IRContract, fn: IRFunction): Diagnostic[] {
   const out: Diagnostic[] = [];
@@ -261,7 +263,15 @@ function ruleNullishFallback(contract: IRContract, fn: IRFunction): Diagnostic[]
       if (e.kind !== "nullish" || isZeroLiteral(e.right)) return;
       const type = inferType(e.left, env);
       const test = emptinessTest(type);
-      if (test) {
+      if (test && hasSideEffects(e.left)) {
+        out.push({
+          rule: "nullish-fallback",
+          severity: "error",
+          message: `\`?? fallback\` in "${fn.name}" cannot be lowered: the left side has side effects (a call or an update) and the lowering evaluates it twice`,
+          loc: stmt.loc ?? fn.loc,
+          fix: "bind the left side to a typed local first (`const v: bigint = …; return v ?? 1n;`), or write the test explicitly with an if / ternary",
+        });
+      } else if (test) {
         out.push({
           rule: "nullish-fallback",
           severity: "info",

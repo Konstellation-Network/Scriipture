@@ -50,12 +50,33 @@ describe("?? lowering", () => {
   it("is an error when the fallback would be dropped", () => {
     const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/BadLowering.ts")]);
     const diags = validateProgram(program);
-    const nullish = diags.filter((d) => d.rule === "nullish-fallback");
+    const nullish = diags.filter((d) => d.rule === "nullish-fallback" && d.message.includes("not testable"));
     expect(nullish).toHaveLength(1);
     expect(nullish[0]!.severity).toBe("error");
     const shape = diags.filter((d) => d.rule === "destructure-shape");
     expect(shape).toHaveLength(1);
     expect(shape[0]!.message).toContain("tuple type annotation");
+  });
+
+  it("is an error when the left side has side effects, since the lowering evaluates it twice", () => {
+    const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/BadLowering.ts")]);
+    const diags = validateProgram(program).filter((d) => d.rule === "nullish-fallback" && d.message.includes("side effects"));
+    expect(diags.map((d) => d.severity)).toEqual(["error", "error"]);
+    expect(diags.map((d) => d.message)).toEqual([
+      expect.stringContaining('"next"'),
+      expect.stringContaining('"nextAt"'),
+    ]);
+  });
+
+  it("types an untyped local from its initializer, so the validator and the emitter agree", () => {
+    const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/StorageRefs.ts")]);
+    const sol = emitProgram(program)[0]!.solidity;
+    expect(sol).toContain("uint256 b = balances[who];");
+    expect(sol).toContain("return (b == 0 ? 7 : b);");
+    expect(sol).toContain("string memory s = names[who];");
+    expect(sol).toContain("return bytes(s).length;");
+    const errors = validateProgram(program).filter((d) => d.severity === "error");
+    expect(errors).toEqual([]);
   });
 
   it("types an element of a parameter array, so the fallback is not dropped", () => {
@@ -104,6 +125,40 @@ describe("tuple destructuring", () => {
     // the `solidity` template helper returns a tuple; give solc a real signature for it
     const patched = sol.replace(/function twoValues\(\) public view returns \(any[^)]*\)/, "function twoValues() public pure returns (uint256, bool)");
     fs.writeFileSync(file, patched, "utf8");
+    const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
+    expect(r.errors).toEqual([]);
+  }, 60_000);
+});
+
+describe("locals bound to storage paths", () => {
+  const FIXTURE_REFS = path.join(ROOT, "tests/contracts/StorageRefs.ts");
+  const solOf = () => emitProgram(parseContractFiles([FIXTURE_REFS]).program)[0]!.solidity;
+
+  it("keeps a struct reached through a mapping read in storage", () => {
+    expect(solOf()).toContain("Meta storage m = proposals[id].meta;");
+  });
+
+  it("keeps a struct reached through a storage-pointer local in storage", () => {
+    const sol = solOf();
+    expect(sol).toContain("Proposal storage p = items[i];");
+    expect(sol).toContain("Meta storage m = p.meta;");
+  });
+
+  it("keeps an array field in storage, so push reaches the chain", () => {
+    expect(solOf()).toContain("uint256[] storage tags = proposals[id].tags;");
+  });
+
+  it("copies a value-typed field", () => {
+    expect(solOf()).toContain("uint256 v = proposals[id].meta.votes;");
+  });
+
+  it("the fixture compiles under solc", () => {
+    const { program, diagnostics } = parseContractFiles([FIXTURE_REFS]);
+    expect(diagnostics).toEqual([]);
+    optimizeProgram(program);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-storagerefs-"));
+    const file = path.join(dir, "StorageRefs.sol");
+    fs.writeFileSync(file, emitProgram(program)[0]!.solidity, "utf8");
     const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
     expect(r.errors).toEqual([]);
   }, 60_000);

@@ -1,12 +1,18 @@
 import type { IRContract, IRExpression, IRFunction, IRStatement, IRStructDecl, IRType } from "../ir/types";
-import { walkStatements } from "../optimizer/walk";
+import { exprContains, walkStatements } from "../optimizer/walk";
 
 /** Everything the emitter and validator know about identifier types at a given point. */
 export interface TypeEnv {
   /** Declared type of each state variable. */
   stateVarTypes?: Map<string, IRType>;
-  /** Parameters and typed locals of the function being emitted. */
+  /** Parameters and locals of the function being emitted, annotated or inferred. */
   localTypes?: Map<string, IRType>;
+  /**
+   * Locals that alias storage rather than hold a copy
+   * (`const p = this.proposals.get(id)` is `Proposal storage p`), so a path
+   * reached through one is a storage path too.
+   */
+  storageLocals?: Set<string>;
   /** Structs declared alongside the contract, so field access can be typed. */
   structs?: Map<string, IRStructDecl>;
 }
@@ -17,22 +23,29 @@ export function unwrapExpr(expr: IRExpression): IRExpression {
   return expr;
 }
 
-/** `this.<stateVar>`, `this.<stateVar>[k]`, or `this.<stateVar>.get(k)` -- a direct storage read. */
+/**
+ * The state variable a storage path is rooted at: `this.x`, then any chain of
+ * `[k]`, `.get(k)` and `.field` on it (`this.proposals.get(id).meta.votes`),
+ * or the same chain rooted at a local that aliases storage. `indexed` says
+ * whether anything was applied to the root. Undefined for anything that is
+ * not a storage path, including a call to one of the contract's own methods.
+ */
 export function storageRoot(expr: IRExpression, env: TypeEnv): { type: IRType; indexed: boolean } | undefined {
   const e = unwrapExpr(expr);
-  const stateVar = (m: IRExpression): IRType | undefined =>
-    m.kind === "member" && m.object.kind === "this" ? env.stateVarTypes?.get(m.property) : undefined;
-  const direct = stateVar(e);
-  if (direct) return { type: direct, indexed: false };
-  if (e.kind === "index") {
-    const t = stateVar(e.object);
-    if (t) return { type: t, indexed: true };
+  if (e.kind === "member" && e.object.kind === "this") {
+    const t = env.stateVarTypes?.get(e.property);
+    return t ? { type: t, indexed: false } : undefined;
   }
-  if (e.kind === "call" && e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) {
-    const t = stateVar(e.callee.object);
-    if (t) return { type: t, indexed: true };
+  if (e.kind === "identifier") {
+    const t = env.storageLocals?.has(e.name) ? env.localTypes?.get(e.name) : undefined;
+    return t ? { type: t, indexed: false } : undefined;
   }
-  return undefined;
+  let inner: IRExpression | undefined;
+  if (e.kind === "index" || e.kind === "member") inner = e.object;
+  else if (e.kind === "call" && e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) inner = e.callee.object;
+  if (!inner) return undefined;
+  const root = storageRoot(inner, env);
+  return root ? { type: root.type, indexed: true } : undefined;
 }
 
 export function isStorageAccess(expr: IRExpression, env: TypeEnv): boolean {
@@ -122,30 +135,66 @@ export function destructureTypes(stmt: Extract<IRStatement, { kind: "destructure
   return stmt.names.map(() => ({ kind: "primitive", name: "uint256" } as IRType));
 }
 
+/** Solidity holds these by reference: a local bound to a storage path of one is a pointer, not a copy. */
+export function isReferenceType(type: IRType | undefined): boolean {
+  return type?.kind === "struct" || type?.kind === "array" || type?.kind === "mapping";
+}
+
+type LetStatement = Extract<IRStatement, { kind: "let" }>;
+
 /**
- * Types of a function's parameters and of every local whose type is known:
- * annotated `let`/`const`, and destructured names. The emitter and the
- * validator must agree on this, or one reports an error the other does not make.
+ * What a `let` declares: its annotated type, else the inferred type of its
+ * initializer; and whether it aliases storage. `const m = this.proposals.get(id).meta`
+ * must be `Meta storage m`, or `m.votes = …` would write to a memory copy and
+ * be lost. The emitter and `functionLocals` both go through here so they
+ * cannot disagree about a local.
  */
-export function collectLocalTypes(fn: IRFunction): Map<string, IRType> {
+export function localDeclaration(stmt: LetStatement, env: TypeEnv): { type?: IRType; storageRef: boolean } {
+  const type = stmt.type ?? (stmt.init ? inferType(stmt.init, env) : undefined);
+  const storageRef = isReferenceType(type) && stmt.init !== undefined && isStorageAccess(stmt.init, env);
+  return { type, storageRef };
+}
+
+/**
+ * Types of a function's parameters and locals -- annotated `let`/`const`,
+ * `let`/`const` whose initializer can be typed, destructured names -- and
+ * which of them alias storage. The emitter and the validator must agree on
+ * this, or one reports an error the other does not make.
+ */
+export function functionLocals(fn: IRFunction, env: TypeEnv): { localTypes: Map<string, IRType>; storageLocals: Set<string> } {
   const localTypes = new Map<string, IRType>();
-  for (const p of fn.params) localTypes.set(p.name, p.type);
+  const storageLocals = new Set<string>();
+  const scope: TypeEnv = { ...env, localTypes, storageLocals };
+  for (const p of fn.params) {
+    localTypes.set(p.name, p.type);
+    if (p.location === "storage") storageLocals.add(p.name);
+  }
+  // Statements are visited in source order, so an initializer sees the locals declared before it.
   walkStatements(fn.body, (s) => {
-    if (s.kind === "let" && s.type) localTypes.set(s.name, s.type);
+    if (s.kind === "let") {
+      const { type, storageRef } = localDeclaration(s, scope);
+      if (type) localTypes.set(s.name, type);
+      if (storageRef) storageLocals.add(s.name);
+      else storageLocals.delete(s.name);
+    }
     if (s.kind === "destructure") {
       const types = destructureTypes(s);
       s.names.forEach((n, i) => { if (n && types[i]) localTypes.set(n, types[i]!); });
     }
   });
-  return localTypes;
+  return { localTypes, storageLocals };
+}
+
+export function collectLocalTypes(fn: IRFunction, env: TypeEnv = {}): Map<string, IRType> {
+  return functionLocals(fn, env).localTypes;
 }
 
 export function typeEnvFor(contract: IRContract, fn: IRFunction): TypeEnv {
-  return {
+  const env: TypeEnv = {
     stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])),
     structs: new Map(contract.structs.map((s) => [s.name, s])),
-    localTypes: collectLocalTypes(fn),
   };
+  return { ...env, ...functionLocals(fn, env) };
 }
 
 /** The literal a TS `?? fallback` is redundant against: Solidity's default value for the type. */
@@ -159,6 +208,27 @@ export function isZeroLiteral(expr: IRExpression): boolean {
   // address(0)
   return e.kind === "call" && e.callee.kind === "identifier" && e.callee.name === "address" &&
     e.args.length === 1 && e.args[0]!.kind === "literal" && e.args[0]!.value === "0";
+}
+
+/** Solidity's explicit conversions: `address(x)`, `uint256(x)`, `bytes32(x)`… -- pure, so safe to evaluate twice. */
+const TYPE_CONVERSION = /^(address|bool|string|bytes\d*|u?int\d*)$/;
+
+/**
+ * Whether evaluating the expression twice can differ from evaluating it once:
+ * it contains an assignment, `++` / `--` / `delete`, `new`, or a call that is
+ * not a mapping read (`m.get(k)`, `m.has(k)`) or a type conversion. `a ?? b`
+ * lowers to a test that reads `a` twice, so such an `a` cannot be lowered
+ * faithfully: `this.queue.get(this.pop()) ?? 1n` would pop twice.
+ */
+export function hasSideEffects(expr: IRExpression): boolean {
+  return exprContains(expr, (e) => {
+    if (e.kind === "assign" || e.kind === "new") return true;
+    if (e.kind === "unary") return e.op === "++" || e.op === "--" || e.op === "delete";
+    if (e.kind !== "call") return false;
+    if (e.callee.kind === "member" && (e.callee.property === "get" || e.callee.property === "has") && e.args.length === 1) return false;
+    if (e.callee.kind === "identifier" && TYPE_CONVERSION.test(e.callee.name)) return false;
+    return true;
+  });
 }
 
 /**

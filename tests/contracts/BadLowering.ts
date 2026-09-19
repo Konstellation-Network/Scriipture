@@ -12,6 +12,20 @@ export class BadLowering {
     const [x, y] = this.helper(other);
   }
 
+  // a call on the left: the lowering reads the left side twice, so it would run twice → error
+  next(): bigint {
+    return this.recs.get(this.bump()).a ?? 1n;
+  }
+
+  // an update on the left, same problem
+  nextAt(i: bigint): bigint {
+    return this.recs.get(i++).a ?? 1n;
+  }
+
+  bump(): bigint {
+    return 1n;
+  }
+
   helper(v: bigint): any {
     return v;
   }

@@ -41,6 +41,24 @@ describe("calldata-params only where calldata is legal", () => {
     expect(s).toContain("function touch(string[] memory words) external");
   });
 
+  it("keeps memory on a param that shares a ?? or ?: branch with a storage value", () => {
+    // solc unifies memory with a storage pointer in a ternary, but not calldata.
+    const s = build("tests/contracts/CalldataNullish.ts");
+    expect(s).toContain("function nameOr(address who, string memory fb) external view");
+    expect(s).toContain("function pick(address who, string memory fb, bool useFb) external view");
+    // a value-typed element and a literal sibling are fine
+    expect(s).toContain("function firstOr(uint256[] calldata xs) external view");
+    expect(s).toContain("function greet(string calldata name) external view");
+  });
+
+  it("the ?? fixture compiles under solc", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-calldata-nullish-"));
+    const file = path.join(dir, "CalldataNullish.sol");
+    fs.writeFileSync(file, build("tests/contracts/CalldataNullish.ts"), "utf8");
+    const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
+    expect(r.errors).toEqual([]);
+  }, 60_000);
+
   it("maps string .length to bytes(...).length", () => {
     expect(sol()).toContain("return bytes(s).length;");
   });
