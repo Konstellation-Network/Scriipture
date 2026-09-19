@@ -13,7 +13,7 @@ import { resolveContract, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
 import { solidityType } from "../mapper/types";
-import { collectLocalTypes } from "../mapper/infer";
+import { functionLocals } from "../mapper/infer";
 
 export interface EmitOptions {
   pragma?: string;
@@ -271,9 +271,9 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
   return lines;
 }
 
-/** The emit context plus the types of this function's parameters and known locals. */
+/** The emit context plus the types of this function's parameters and locals, and which locals alias storage. */
 function withLocals(ctx: EmitContext, fn: IRFunction): EmitContext {
-  return { ...ctx, localTypes: collectLocalTypes(fn) };
+  return { ...ctx, ...functionLocals(fn, ctx) };
 }
 
 function paramSignature(p: IRParam): string {

@@ -54,7 +54,7 @@ describe("attestation — gate status", () => {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DeploymentBytecodeMismatch, stampDeployment, writeAttestation, type AttestationBundle } from "../src/security/attestation";
+import { DeploymentBytecodeMismatch, assertVerifiedBytecode, stampDeployment, writeAttestation, type AttestationBundle } from "../src/security/attestation";
 
 describe("attestation — deployment stamp", () => {
   const bundleFor = (deployedBytecode?: string): AttestationBundle => ({
@@ -104,5 +104,15 @@ describe("attestation — deployment stamp", () => {
       network: "base", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
       artifactDeployedBytecode: "anything",
     })).toThrow(/no deployed-bytecode hash/);
+  });
+
+  it("can run the bytecode comparison on its own, before anything is sent", () => {
+    // secure-deploy calls this with the hash of the artifact it is about to
+    // deploy; a mismatch must be caught here, not after the transaction is mined.
+    const { p } = write(bundleFor("verified-hash"));
+    expect(assertVerifiedBytecode(p, "verified-hash").contract).toBe("X");
+    expect(() => assertVerifiedBytecode(p, "some-other-contract")).toThrow(DeploymentBytecodeMismatch);
+    const stored = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(stored.deployment).toBeUndefined();
   });
 });

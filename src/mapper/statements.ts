@@ -1,7 +1,7 @@
 import type { IRStatement } from "../ir/types";
 import { solidityType } from "./types";
 import { emitExpression, type EmitContext } from "./expressions";
-import { destructureTypes, inferType, isStorageAccess } from "./infer";
+import { destructureTypes, localDeclaration } from "./infer";
 
 export function emitStatements(stmts: IRStatement[], ctx: EmitContext, indent: string): string[] {
   const lines: string[] = [];
@@ -68,11 +68,11 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return lines;
     }
     case "let": {
-      const type = stmt.type ?? (stmt.init ? inferType(stmt.init, ctx) : undefined);
-      // A struct local bound directly to a storage slot is a reference, not a copy:
+      // A reference-typed local bound to a storage path is a pointer, not a copy:
       // `const p = this.proposals.get(id)` must become `Proposal storage p = proposals[id];`
-      // or writes through `p` would silently go to a memory copy.
-      const storageRef = type?.kind === "struct" && stmt.init !== undefined && isStorageAccess(stmt.init, ctx);
+      // or writes through `p` would silently go to a memory copy. `localDeclaration`
+      // is also what builds the type environment, so the two cannot disagree.
+      const { type, storageRef } = localDeclaration(stmt, ctx);
       // solidityType's "storage" location yields the bare declaration form; a local needs the keyword spelled out.
       const typeStr = !type ? "uint256" : storageRef ? `${solidityType(type, "storage")} storage` : solidityType(type, "memory");
       const initStr = stmt.init ? ` = ${emitExpression(stmt.init, ctx)}` : "";

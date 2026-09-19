@@ -42,18 +42,21 @@ export interface DeployOutcome {
   onchainMatchesArtifact?: boolean;
 }
 
-export async function deployCommand(input: string, opts: DeployOptions): Promise<DeployOutcome> {
-  const config = await loadConfig();
-  const artifactsDir = path.resolve(opts.artifacts ?? path.join(config.outDir, "artifacts"));
-  const contractName = path.basename(input);
-  const artifactPath = path.join(artifactsDir, `${contractName}.json`);
-
+/** The artifact `deployCommand` will send for `contractName`, or exit when there is none. */
+export function readArtifact(artifactsDir: string, contractName: string): CompiledArtifact {
+  const artifactPath = path.join(path.resolve(artifactsDir), `${contractName}.json`);
   if (!fs.existsSync(artifactPath)) {
     console.error(`Artifact not found: ${artifactPath}. Run "scriipture compile" first.`);
     process.exit(1);
   }
+  return JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+}
 
-  const artifact: CompiledArtifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+export async function deployCommand(input: string, opts: DeployOptions): Promise<DeployOutcome> {
+  const config = await loadConfig();
+  const artifactsDir = opts.artifacts ?? path.join(config.outDir, "artifacts");
+  const contractName = path.basename(input);
+  const artifact = readArtifact(artifactsDir, contractName);
   const args = (opts.args ?? []).map(decodeArg);
 
   const useBrowser = opts.browser ?? (!opts.wallet && opts.network !== "anvil");

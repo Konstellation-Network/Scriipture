@@ -301,17 +301,27 @@ function parseParam(param: ts.ParameterDeclaration, ctx: ParseContext): IRParam 
   return { name, type };
 }
 
+/**
+ * `public` and `private` are reserved words in TypeScript, so the package
+ * exports them as `public_` / `private_`. The rest of the pipeline knows the
+ * Solidity spelling only; without this a `@private_` helper was silently
+ * emitted `public`.
+ */
+const DECORATOR_ALIASES: Record<string, string> = { public_: "public", private_: "private" };
+
 function parseDecorators(node: ts.HasDecorators, ctx: ParseContext): IRDecorator[] {
   if (!ts.canHaveDecorators(node)) return [];
   const decs = ts.getDecorators(node) ?? [];
   return decs.map((d) => {
     if (ts.isCallExpression(d.expression)) {
+      const name = d.expression.expression.getText(ctx.sourceFile);
       return {
-        name: d.expression.expression.getText(ctx.sourceFile),
+        name: DECORATOR_ALIASES[name] ?? name,
         args: d.expression.arguments.map((a) => parseExpression(a, ctx)),
       };
     }
-    return { name: d.expression.getText(ctx.sourceFile), args: [] };
+    const name = d.expression.getText(ctx.sourceFile);
+    return { name: DECORATOR_ALIASES[name] ?? name, args: [] };
   });
 }
 

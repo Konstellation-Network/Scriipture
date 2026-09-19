@@ -94,9 +94,9 @@ export class DeploymentBytecodeMismatch extends Error {
   constructor(readonly expected: string | undefined, readonly actual: string) {
     super(
       expected
-        ? `refusing to stamp: the deployed artifact's bytecode (sha256 ${actual.slice(0, 16)}…) is not the bytecode the gates verified (sha256 ${expected.slice(0, 16)}…). ` +
+        ? `the artifact's deployed bytecode (sha256 ${actual.slice(0, 16)}…) is not the bytecode the gates verified (sha256 ${expected.slice(0, 16)}…). ` +
           "Re-run verify against the sources you are deploying; an attestation must not name an address it did not check."
-        : "refusing to stamp: this attestation carries no deployed-bytecode hash, so the deployment cannot be tied to verified bytecode.",
+        : "this attestation carries no deployed-bytecode hash, so a deployment cannot be tied to verified bytecode.",
     );
     this.name = "DeploymentBytecodeMismatch";
   }
@@ -182,14 +182,26 @@ export function writeAttestation(outPath: string, bundle: AttestationBundle): st
  * Returns the new fingerprint of the rewritten file.
  */
 export function stampDeployment(attPath: string, deployment: DeploymentRecord): string {
-  const bundle = JSON.parse(fs.readFileSync(attPath, "utf8")) as AttestationBundle;
-  if (!bundle.hashes.deployedBytecode || bundle.hashes.deployedBytecode !== deployment.artifactDeployedBytecode) {
-    throw new DeploymentBytecodeMismatch(bundle.hashes.deployedBytecode, deployment.artifactDeployedBytecode);
-  }
+  const bundle = assertVerifiedBytecode(attPath, deployment.artifactDeployedBytecode);
   bundle.network = deployment.network;
   bundle.address = deployment.address;
   bundle.deployment = deployment;
   return writeAttestation(attPath, bundle);
+}
+
+/**
+ * Read the bundle and throw `DeploymentBytecodeMismatch` unless
+ * `artifactDeployedBytecode` (sha256 of the artifact about to be deployed) is
+ * the hash the gates recorded. `secure-deploy` runs this before sending the
+ * transaction, so a stale or substituted artifact is refused rather than put on
+ * chain and then reported; `stampDeployment` runs it again afterwards.
+ */
+export function assertVerifiedBytecode(attPath: string, artifactDeployedBytecode: string): AttestationBundle {
+  const bundle = JSON.parse(fs.readFileSync(attPath, "utf8")) as AttestationBundle;
+  if (!bundle.hashes.deployedBytecode || bundle.hashes.deployedBytecode !== artifactDeployedBytecode) {
+    throw new DeploymentBytecodeMismatch(bundle.hashes.deployedBytecode, artifactDeployedBytecode);
+  }
+  return bundle;
 }
 
 export function attestationFingerprint(bundle: AttestationBundle): string {

@@ -1,7 +1,7 @@
 import pc from "picocolors";
 import { verifyCommand } from "./verify";
-import { deployCommand, maybeVerifySource } from "./deploy";
-import { DeploymentBytecodeMismatch, stampDeployment, unjustifiedSkippedGates } from "../security/attestation";
+import { deployCommand, maybeVerifySource, readArtifact } from "./deploy";
+import { DeploymentBytecodeMismatch, assertVerifiedBytecode, sha256, stampDeployment, unjustifiedSkippedGates } from "../security/attestation";
 
 export interface SecureDeployOptions {
   network: string;
@@ -56,16 +56,31 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
     process.exit(1);
   }
 
+  // Deploy the artifact `verify` just compiled, not whatever `compile` last
+  // left on disk: a stale file would put unverified bytecode on chain under
+  // the cover of a passing attestation. `--artifacts` overrides that, so hash
+  // whatever will actually be sent and compare it with the attestation now --
+  // `stampDeployment` repeats the check, but by then the bytecode is on chain.
+  const artifactsDir = opts.artifacts ?? verify.artifactsDir;
+  const artifact = readArtifact(artifactsDir, opts.contract);
+  try {
+    assertVerifiedBytecode(att.path, sha256(artifact.deployedBytecode));
+  } catch (err) {
+    if (err instanceof DeploymentBytecodeMismatch) {
+      console.error(pc.red(`\n✗ refusing to deploy: ${err.message}`));
+      console.error(pc.red(`  artifact: ${artifactsDir}/${opts.contract}.json — nothing was sent.`));
+      process.exit(1);
+    }
+    throw err;
+  }
+
   console.log("");
   console.log(pc.bold("Stage 2/2 — deploy"));
   const args = opts.args ?? [];
   const outcome = await deployCommand(opts.contract, {
     network: opts.network,
     args,
-    // Deploy the artifact `verify` just compiled, not whatever `compile` last
-    // left on disk: a stale file would put unverified bytecode on chain under
-    // the cover of a passing attestation.
-    artifacts: opts.artifacts ?? verify.artifactsDir,
+    artifacts: artifactsDir,
     deferSourceVerify: true,
   });
 
@@ -88,11 +103,11 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
     } else if (outcome.onchainMatchesArtifact === false) {
       console.log(pc.yellow(`    ⚠ on-chain code differs from the compiled deployedBytecode — expected when the contract has immutables or linked libraries; both hashes are recorded`));
     } else {
-      console.log(pc.dim(`    (could not read eth_getCode at the address; on-chain hash not recorded)`));
+      console.log(pc.dim(`    (eth_getCode returned no code at the address, or the node could not be reached; on-chain hash not recorded)`));
     }
   } catch (err) {
     if (err instanceof DeploymentBytecodeMismatch) {
-      console.error(pc.red(`\n✗ ${err.message}`));
+      console.error(pc.red(`\n✗ refusing to stamp: ${err.message}`));
       console.error(pc.red(`  deployed at ${outcome.address} on ${outcome.network} (tx ${outcome.txHash}); the attestation was left unstamped.`));
       process.exit(1);
     }

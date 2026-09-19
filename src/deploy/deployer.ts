@@ -54,7 +54,9 @@ export async function deploy({ artifact, network, config, args = [], privateKeyO
 /**
  * `eth_getCode` at `address`. Used to record what is actually on chain in the
  * attestation; returns undefined when the node cannot be reached rather than
- * failing a deploy that already succeeded.
+ * failing a deploy that already succeeded. An empty answer (`0x`, which a
+ * load-balanced endpoint lagging the receipt will give) is also undefined:
+ * it is not the contract's code and must not be hashed as if it were.
  */
 export async function fetchDeployedCode(
   network: string,
@@ -69,8 +71,8 @@ export async function fetchDeployedCode(
     if (!rpcUrl) return undefined;
     const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
     // Raw request rather than getCode/getBytecode so this does not track viem renames.
-    const code = await publicClient.request({ method: "eth_getCode", params: [address, "latest"] } as any);
-    return (code as Hex) ?? undefined;
+    const code = (await publicClient.request({ method: "eth_getCode", params: [address, "latest"] } as any)) as Hex | undefined;
+    return code && code !== "0x" ? code : undefined;
   } catch {
     return undefined;
   }
