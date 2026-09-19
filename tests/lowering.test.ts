@@ -58,6 +58,18 @@ describe("?? lowering", () => {
     expect(shape[0]!.message).toContain("tuple type annotation");
   });
 
+  it("types an element of a parameter array, so the fallback is not dropped", () => {
+    const { sol } = build();
+    expect(sol).toContain("return (addrs[0] == address(0) ? msg.sender : addrs[0]);");
+  });
+
+  it("agrees with the emitter about destructured locals (no false error)", () => {
+    const { program, sol } = build();
+    expect(sol).toContain("return b ? (a == 0 ? 5 : a) : 0;");
+    const errors = validateProgram(program).filter((d) => d.rule === "nullish-fallback" && d.severity === "error");
+    expect(errors).toEqual([]);
+  });
+
   it("is only informational when it lowers cleanly", () => {
     const { program } = build();
     const diags = validateProgram(program).filter((d) => d.rule === "nullish-fallback");

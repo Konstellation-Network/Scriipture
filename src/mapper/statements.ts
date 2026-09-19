@@ -1,7 +1,7 @@
-import type { IRExpression, IRStatement, IRType } from "../ir/types";
+import type { IRStatement } from "../ir/types";
 import { solidityType } from "./types";
 import { emitExpression, type EmitContext } from "./expressions";
-import { inferType, isStorageAccess, unwrapExpr } from "./infer";
+import { destructureTypes, inferType, isStorageAccess } from "./infer";
 
 export function emitStatements(stmts: IRStatement[], ctx: EmitContext, indent: string): string[] {
   const lines: string[] = [];
@@ -79,7 +79,7 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return [`${indent}${typeStr} ${stmt.name}${initStr};`];
     }
     case "destructure": {
-      const types = destructureTypes(stmt, ctx);
+      const types = destructureTypes(stmt);
       const parts = types.map((t, i) => {
         const name = stmt.names[i];
         return name ? `${solidityType(t, "memory")} ${name}` : "";
@@ -93,25 +93,6 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
   }
 }
 
-const LOW_LEVEL_CALLS = new Set(["call", "delegatecall", "staticcall"]);
-
-/** `(bool, bytes memory)` for a low-level call, else the tuple annotation, else `uint256` per slot. */
-export function destructureTypes(stmt: Extract<IRStatement, { kind: "destructure" }>, _ctx: EmitContext): IRType[] {
-  if (stmt.types && stmt.types.length > 0) {
-    const out = [...stmt.types];
-    while (out.length < stmt.names.length) out.push({ kind: "primitive", name: "uint256" });
-    return out;
-  }
-  if (isLowLevelCall(stmt.init)) {
-    return [{ kind: "primitive", name: "bool" }, { kind: "primitive", name: "bytes" }];
-  }
-  return stmt.names.map(() => ({ kind: "primitive", name: "uint256" } as IRType));
-}
-
-export function isLowLevelCall(expr: IRExpression): boolean {
-  const e = unwrapExpr(expr);
-  return e.kind === "call" && e.callee.kind === "member" && LOW_LEVEL_CALLS.has(e.callee.property);
-}
 
 function emitForInit(init: IRStatement, ctx: EmitContext): string {
   if (init.kind === "let") {

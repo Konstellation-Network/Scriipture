@@ -52,8 +52,9 @@ program
   .option("-o, --out <dir>", "output directory", "out/sol")
   .option("--no-optimize", "skip optimizer passes")
   .option("--reorder-storage", "let pack-slots reorder state variables to save slots (rewrites the storage layout; never use with upgradeable proxies)")
-  .action(async (input: string, opts: { out: string; optimize: boolean; reorderStorage?: boolean }) => {
-    await buildCommand(input, { out: opts.out, noOptimize: !opts.optimize, reorderStorage: opts.reorderStorage });
+  .option("--no-validate", "emit even when the validator reports errors (the output may not match the source)")
+  .action(async (input: string, opts: { out: string; optimize: boolean; reorderStorage?: boolean; validate: boolean }) => {
+    await buildCommand(input, { out: opts.out, noOptimize: !opts.optimize, reorderStorage: opts.reorderStorage, noValidate: !opts.validate });
   });
 
 program

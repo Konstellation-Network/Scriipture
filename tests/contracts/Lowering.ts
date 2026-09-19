@@ -55,6 +55,12 @@ export class Lowering {
     return this.paused ?? true;
   }
 
+  // fallback on an element of a parameter array — the type comes from the parameter
+  @view
+  firstOr(addrs: Array<Address>): Address {
+    return addrs[0] ?? msg.sender;
+  }
+
   // low-level call destructuring with an omitted slot
   ping(to: Address): void {
     const safe: CheckedAddress = validate(to);
@@ -68,6 +74,13 @@ export class Lowering {
     const [ok, data] = (safe as any).call("");
     require(ok, "call failed");
     return data;
+  }
+
+  // a destructured local feeding `??` — the emitter and the validator must agree it is typed
+  @view
+  pairFallback(): bigint {
+    const [a, b]: [bigint, boolean] = this.twoValues();
+    return b ? a ?? 5n : 0n;
   }
 
   // explicit tuple annotation

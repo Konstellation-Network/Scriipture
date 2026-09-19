@@ -54,25 +54,55 @@ describe("attestation — gate status", () => {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { stampDeployment, writeAttestation, type AttestationBundle } from "../src/security/attestation";
+import { DeploymentBytecodeMismatch, stampDeployment, writeAttestation, type AttestationBundle } from "../src/security/attestation";
 
 describe("attestation — deployment stamp", () => {
-  it("records network, address and tx after deploy and changes the fingerprint", () => {
+  const bundleFor = (deployedBytecode?: string): AttestationBundle => ({
+    schemaVersion: 2, contract: "X",
+    hashes: { tsSource: "a", solSource: "b", bytecode: "c", deployedBytecode },
+    tools: [], gates: [gatePassed("solc-compile")], optimizations: [], diagnostics: [],
+    generatedAt: "t", generatedBy: "scriipture@test",
+  });
+  const write = (bundle: AttestationBundle) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-att-"));
     const p = path.join(dir, "X.attestation.json");
-    const bundle: AttestationBundle = {
-      schemaVersion: 2, contract: "X",
-      hashes: { tsSource: "a", solSource: "b" },
-      tools: [], gates: [gatePassed("solc-compile")], optimizations: [], diagnostics: [],
-      generatedAt: "t", generatedBy: "scriipture@test",
-    };
-    const before = writeAttestation(p, bundle);
-    const after = stampDeployment(p, { network: "base-sepolia", address: "0xabc", txHash: "0xdef", deployedAt: "t2" });
+    return { p, fingerprint: writeAttestation(p, bundle) };
+  };
+
+  it("records network, address, tx and both bytecode hashes, and changes the fingerprint", () => {
+    const { p, fingerprint: before } = write(bundleFor("verified-hash"));
+    const after = stampDeployment(p, {
+      network: "base-sepolia", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
+      artifactDeployedBytecode: "verified-hash",
+      onchainDeployedBytecode: "onchain-hash",
+      onchainMatchesArtifact: false,
+    });
     expect(after).not.toBe(before);
     const stored = JSON.parse(fs.readFileSync(p, "utf8"));
     expect(stored.network).toBe("base-sepolia");
     expect(stored.address).toBe("0xabc");
-    expect(stored.deployment).toEqual({ network: "base-sepolia", address: "0xabc", txHash: "0xdef", deployedAt: "t2" });
+    expect(stored.deployment.artifactDeployedBytecode).toBe("verified-hash");
+    expect(stored.deployment.onchainDeployedBytecode).toBe("onchain-hash");
+    expect(stored.deployment.onchainMatchesArtifact).toBe(false);
     expect(stored.gates).toHaveLength(1); // nothing else touched
+  });
+
+  it("refuses to stamp bytecode the gates never saw, and leaves the bundle untouched", () => {
+    const { p } = write(bundleFor("verified-hash"));
+    expect(() => stampDeployment(p, {
+      network: "base", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
+      artifactDeployedBytecode: "some-other-contract",
+    })).toThrow(DeploymentBytecodeMismatch);
+    const stored = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(stored.address).toBeUndefined();
+    expect(stored.deployment).toBeUndefined();
+  });
+
+  it("refuses when the attestation carries no deployed-bytecode hash at all", () => {
+    const { p } = write(bundleFor(undefined));
+    expect(() => stampDeployment(p, {
+      network: "base", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
+      artifactDeployedBytecode: "anything",
+    })).toThrow(/no deployed-bytecode hash/);
   });
 });

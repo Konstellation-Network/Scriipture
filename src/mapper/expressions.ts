@@ -1,4 +1,4 @@
-import type { IRExpression, IRType } from "../ir/types";
+import type { IRExpression } from "../ir/types";
 import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "./infer";
 
 const BINARY_OP_MAP: Record<string, string> = {
@@ -33,10 +33,6 @@ const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
 
 export interface EmitContext extends TypeEnv {
   stateVarNames: Set<string>;
-  /** Declared type of each state variable; lets locals bound to storage infer their type and location. */
-  stateVarTypes?: Map<string, IRType>;
-  /** Parameters and typed locals of the function being emitted. */
-  localTypes?: Map<string, IRType>;
 }
 
 export function emitExpression(expr: IRExpression, ctx: EmitContext): string {
@@ -70,7 +66,9 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
     case "unary": {
       const needsParens = expr.operand.kind === "binary" || expr.operand.kind === "conditional" || expr.operand.kind === "assign";
       const inner = needsParens ? `(${emit(expr.operand, ctx)})` : emit(expr.operand, ctx);
-      return expr.prefix ? `${expr.op}${inner}` : `${inner}${expr.op}`;
+      // `delete` is a word, not a symbol: `deletex` is not Solidity.
+      const sep = /^[a-z]+$/.test(expr.op) ? " " : "";
+      return expr.prefix ? `${expr.op}${sep}${inner}` : `${inner}${sep}${expr.op}`;
     }
     case "conditional":
       return `${emit(expr.test, ctx)} ? ${emit(expr.consequent, ctx)} : ${emit(expr.alternate, ctx)}`;
@@ -134,6 +132,11 @@ function emitLiteral(expr: Extract<IRExpression, { kind: "literal" }>): string {
 }
 
 function emitMember(expr: Extract<IRExpression, { kind: "member" }>, ctx: EmitContext): string {
+  // `s.length` is valid TS for a string but not Solidity, which needs bytes(s).length.
+  if (expr.property === "length") {
+    const t = inferType(expr.object, ctx);
+    if (t?.kind === "primitive" && t.name === "string") return `bytes(${emit(expr.object, ctx)}).length`;
+  }
   if (expr.object.kind === "this" && ctx.stateVarNames.has(expr.property)) {
     return expr.property;
   }

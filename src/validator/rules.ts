@@ -11,8 +11,7 @@ import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
-import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "../mapper/infer";
-import { isLowLevelCall } from "../mapper/statements";
+import { emptinessTest, inferType, isLowLevelCall, isZeroLiteral, typeEnvFor } from "../mapper/infer";
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -247,14 +246,6 @@ const RULES: Rule[] = [
   ruleDestructureShape,
 ];
 
-function typeEnvFor(contract: IRContract, fn: IRFunction): TypeEnv {
-  const localTypes = new Map(fn.params.map((p) => [p.name, p.type]));
-  walkStatements(fn.body, (s) => {
-    if (s.kind === "let" && s.type) localTypes.set(s.name, s.type);
-  });
-  return { stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])), localTypes };
-}
-
 /**
  * `a ?? b` has no Solidity counterpart: a missing mapping key reads as the
  * type's default, never as undefined. `?? 0n` (or false / "" / address(0)) is
@@ -410,6 +401,16 @@ function ruleViewDoesNotMutate(contract: IRContract, fn: IRFunction): Diagnostic
           rule: isPure ? "pure-no-mutate" : "view-no-mutate",
           severity: "error",
           message: `@${isPure ? "pure" : "view"} function "${fn.name}" mutates state`,
+          loc: stmt.loc,
+        });
+      }
+    }
+    if (stmt.kind === "expression" && stmt.expr.kind === "unary" && stmt.expr.op === "delete") {
+      if (touchesState(stmt.expr.operand, stateNames)) {
+        out.push({
+          rule: isPure ? "pure-no-mutate" : "view-no-mutate",
+          severity: "error",
+          message: `@${isPure ? "pure" : "view"} function "${fn.name}" mutates state via delete`,
           loc: stmt.loc,
         });
       }

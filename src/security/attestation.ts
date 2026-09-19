@@ -68,6 +68,32 @@ export interface DeploymentRecord {
   txHash: string;
   from?: string;
   deployedAt: string;
+  /**
+   * sha256 of the `deployedBytecode` in the artifact that was actually sent.
+   * Must equal `hashes.deployedBytecode`, or the bundle would claim the audited
+   * source is at an address holding something else.
+   */
+  artifactDeployedBytecode: string;
+  /** sha256 of `eth_getCode(address)` once the tx was mined, when it could be read. */
+  onchainDeployedBytecode?: string;
+  /**
+   * Whether on-chain code equals the artifact's deployed bytecode. `false` is
+   * normal and not an error when the contract has immutables or linked
+   * libraries, since those are substituted at construction time.
+   */
+  onchainMatchesArtifact?: boolean;
+}
+
+export class DeploymentBytecodeMismatch extends Error {
+  constructor(readonly expected: string | undefined, readonly actual: string) {
+    super(
+      expected
+        ? `refusing to stamp: the deployed artifact's bytecode (sha256 ${actual.slice(0, 16)}…) is not the bytecode the gates verified (sha256 ${expected.slice(0, 16)}…). ` +
+          "Re-run verify against the sources you are deploying; an attestation must not name an address it did not check."
+        : "refusing to stamp: this attestation carries no deployed-bytecode hash, so the deployment cannot be tied to verified bytecode.",
+    );
+    this.name = "DeploymentBytecodeMismatch";
+  }
 }
 
 export interface AttestationBundle {
@@ -141,10 +167,19 @@ export function writeAttestation(outPath: string, bundle: AttestationBundle): st
  * Record where a verified contract actually went. The bundle is written by
  * `verify` before the deploy exists; `secure-deploy` calls this afterwards so
  * the attestation ties the gate results to a network and address.
+ *
+ * Throws `DeploymentBytecodeMismatch` unless the bytecode that was deployed is
+ * the bytecode the gates hashed. Without that check the bundle would assert
+ * that audited source lives at an address whose code nobody compared -- which
+ * a stale `out/artifacts/` file alone is enough to make false.
+ *
  * Returns the new fingerprint of the rewritten file.
  */
 export function stampDeployment(attPath: string, deployment: DeploymentRecord): string {
   const bundle = JSON.parse(fs.readFileSync(attPath, "utf8")) as AttestationBundle;
+  if (!bundle.hashes.deployedBytecode || bundle.hashes.deployedBytecode !== deployment.artifactDeployedBytecode) {
+    throw new DeploymentBytecodeMismatch(bundle.hashes.deployedBytecode, deployment.artifactDeployedBytecode);
+  }
   bundle.network = deployment.network;
   bundle.address = deployment.address;
   bundle.deployment = deployment;

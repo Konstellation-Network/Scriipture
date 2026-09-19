@@ -1,7 +1,7 @@
 import pc from "picocolors";
 import { verifyCommand } from "./verify";
-import { deployCommand } from "./deploy";
-import { stampDeployment, unjustifiedSkippedGates } from "../security/attestation";
+import { deployCommand, maybeVerifySource } from "./deploy";
+import { DeploymentBytecodeMismatch, stampDeployment, unjustifiedSkippedGates } from "../security/attestation";
 
 export interface SecureDeployOptions {
   network: string;
@@ -48,25 +48,53 @@ export async function secureDeployCommand(input: string, opts: SecureDeployOptio
 
   console.log("");
   console.log(pc.bold("Stage 2/2 — deploy"));
+  const args = opts.args ?? [];
   const outcome = await deployCommand(opts.contract, {
     network: opts.network,
-    args: opts.args ?? [],
-    artifacts: opts.artifacts,
+    args,
+    // Deploy the artifact `verify` just compiled, not whatever `compile` last
+    // left on disk: a stale file would put unverified bytecode on chain under
+    // the cover of a passing attestation.
+    artifacts: opts.artifacts ?? verify.artifactsDir,
+    deferSourceVerify: true,
   });
 
   // Tie the gate results to the deployment they cleared.
   const att = verify.attestations.find((a) => a.contract === opts.contract);
-  if (att) {
+  if (!att) {
+    console.error(pc.red(`\n✗ no attestation was written for ${opts.contract}; refusing to leave an unrecorded deploy unreported.`));
+    console.error(pc.red(`  deployed at ${outcome.address} on ${outcome.network} (tx ${outcome.txHash}) — record this by hand.`));
+    process.exit(1);
+  }
+
+  try {
     const fingerprint = stampDeployment(att.path, {
       network: outcome.network,
       address: outcome.address,
       txHash: outcome.txHash,
       from: outcome.from,
       deployedAt: new Date().toISOString(),
+      artifactDeployedBytecode: outcome.artifactDeployedBytecode,
+      onchainDeployedBytecode: outcome.onchainDeployedBytecode,
+      onchainMatchesArtifact: outcome.onchainMatchesArtifact,
     });
     console.log(`  attestation: ${att.path}`);
     console.log(`    fingerprint: ${pc.dim(fingerprint.slice(0, 16) + "…")} (now records ${outcome.network} @ ${outcome.address})`);
-  } else {
-    console.log(pc.yellow(`  ⚠ no attestation found for ${opts.contract}; deployment not recorded in a bundle`));
+    if (outcome.onchainMatchesArtifact === true) {
+      console.log(`    on-chain code matches the verified bytecode`);
+    } else if (outcome.onchainMatchesArtifact === false) {
+      console.log(pc.yellow(`    ⚠ on-chain code differs from the compiled deployedBytecode — expected when the contract has immutables or linked libraries; both hashes are recorded`));
+    } else {
+      console.log(pc.dim(`    (could not read eth_getCode at the address; on-chain hash not recorded)`));
+    }
+  } catch (err) {
+    if (err instanceof DeploymentBytecodeMismatch) {
+      console.error(pc.red(`\n✗ ${err.message}`));
+      console.error(pc.red(`  deployed at ${outcome.address} on ${outcome.network} (tx ${outcome.txHash}); the attestation was left unstamped.`));
+      process.exit(1);
+    }
+    throw err;
   }
+
+  await maybeVerifySource(outcome, args);
 }

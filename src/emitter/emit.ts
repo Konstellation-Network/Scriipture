@@ -8,13 +8,12 @@ import type {
   IRProgram,
   IRStateVar,
   IRStructDecl,
-  IRType,
 } from "../ir/types";
 import { resolveContract, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
 import { solidityType } from "../mapper/types";
-import { walkStatements } from "../optimizer/walk";
+import { collectLocalTypes } from "../mapper/infer";
 
 export interface EmitOptions {
   pragma?: string;
@@ -45,7 +44,8 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   const resolution = resolveContract(contract);
   const stateVarNames = new Set(contract.stateVars.map((v) => v.name));
   const stateVarTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
-  const ctx: EmitContext = { stateVarNames, stateVarTypes };
+  const structs = new Map(contract.structs.map((s) => [s.name, s]));
+  const ctx: EmitContext = { stateVarNames, stateVarTypes, structs };
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
@@ -271,15 +271,9 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
   return lines;
 }
 
-/** The emit context plus the types of this function's parameters and annotated locals. */
+/** The emit context plus the types of this function's parameters and known locals. */
 function withLocals(ctx: EmitContext, fn: IRFunction): EmitContext {
-  const localTypes = new Map<string, IRType>();
-  for (const p of fn.params) localTypes.set(p.name, p.type);
-  walkStatements(fn.body, (s) => {
-    if (s.kind === "let" && s.type) localTypes.set(s.name, s.type);
-    if (s.kind === "destructure" && s.types) s.names.forEach((n, i) => { if (n && s.types![i]) localTypes.set(n, s.types![i]!); });
-  });
-  return { ...ctx, localTypes };
+  return { ...ctx, localTypes: collectLocalTypes(fn) };
 }
 
 function paramSignature(p: IRParam): string {

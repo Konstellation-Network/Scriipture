@@ -46,7 +46,7 @@ export interface CompileInput {
   modelCheck?: boolean;
 }
 
-const SMT_UNAVAILABLE_HINT = "install a native solc (`brew install solidity`, or a static build from github.com/ethereum/solidity/releases) — the bundled solc-js cannot run the Z3 solver";
+const SMT_UNAVAILABLE_HINT = "install a native solc (`brew install solidity`, or a static build from github.com/ethereum/solidity/releases)";
 
 export function compileSolidity({ solFiles, config, modelCheck = false }: CompileInput): CompileResult {
   const sources: Record<string, { content: string }> = {};

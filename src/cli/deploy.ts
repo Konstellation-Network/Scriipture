@@ -3,7 +3,8 @@ import path from "node:path";
 import pc from "picocolors";
 import { loadConfig } from "../config/load";
 import type { CompiledArtifact } from "../compiler/solc";
-import { deploy } from "../deploy/deployer";
+import { deploy, fetchDeployedCode } from "../deploy/deployer";
+import { sha256 } from "../security/attestation";
 import { loadWallet } from "../wallet/store";
 import { browserDeploy } from "../wallet/browser-deploy";
 import type { Abi, Hex } from "viem";
@@ -16,6 +17,13 @@ export interface DeployOptions {
   rpc?: string;
   browser?: boolean;
   verify?: boolean;
+  /**
+   * Return before submitting source to the explorer. `secure-deploy` sets this
+   * so it can stamp the attestation first: verifySourceCommand exits the
+   * process on failure, which would otherwise leave a deployed contract with
+   * no record of it in the bundle.
+   */
+  deferSourceVerify?: boolean;
 }
 
 export interface DeployOutcome {
@@ -24,6 +32,12 @@ export interface DeployOutcome {
   address: Hex;
   txHash: Hex;
   from?: Hex;
+  /** sha256 of the artifact's deployedBytecode -- what was actually sent. */
+  artifactDeployedBytecode: string;
+  /** sha256 of eth_getCode at the address, when the node could be reached. */
+  onchainDeployedBytecode?: string;
+  /** Differs legitimately when the contract has immutables or linked libraries. */
+  onchainMatchesArtifact?: boolean;
 }
 
 export async function deployCommand(input: string, opts: DeployOptions): Promise<DeployOutcome> {
@@ -74,18 +88,38 @@ export async function deployCommand(input: string, opts: DeployOptions): Promise
 
   writeDeployLog(opts.network, contractName, { address, txHash, args, from });
 
+  const onchainCode = await fetchDeployedCode(opts.network, config, address, opts.rpc);
+  const onchainDeployedBytecode = onchainCode ? sha256(onchainCode) : undefined;
+  const outcome: DeployOutcome = {
+    contractName,
+    network: opts.network,
+    address,
+    txHash,
+    from,
+    artifactDeployedBytecode: sha256(artifact.deployedBytecode),
+    onchainDeployedBytecode,
+    onchainMatchesArtifact: onchainCode ? onchainCode === artifact.deployedBytecode : undefined,
+  };
+
+  if (!opts.deferSourceVerify) await maybeVerifySource(outcome, args, opts.verify);
+
+  return outcome;
+}
+
+/**
+ * Submit source to the explorer when an Etherscan key is configured and the
+ * network is not a local devnet, unless `explicit` says otherwise.
+ * Separate from `deployCommand` so a caller can record the deployment first.
+ */
+export async function maybeVerifySource(outcome: DeployOutcome, args: unknown[], explicit?: boolean): Promise<void> {
   const { getEtherscanKey } = await import("../config/user-store");
-  const shouldVerify = opts.verify ?? (
-    !!getEtherscanKey() && opts.network !== "anvil"
-  );
+  const shouldVerify = explicit ?? (!!getEtherscanKey() && outcome.network !== "anvil");
   if (shouldVerify) {
     const { verifySourceCommand } = await import("./verify-source");
-    await verifySourceCommand(contractName, { network: opts.network, address, args });
-  } else if (opts.network !== "anvil" && !getEtherscanKey()) {
+    await verifySourceCommand(outcome.contractName, { network: outcome.network, address: outcome.address, args });
+  } else if (outcome.network !== "anvil" && !getEtherscanKey()) {
     console.log(pc.dim(`(skip verify: set etherscan-key via 'scriipture config set etherscan-key <KEY>')`));
   }
-
-  return { contractName, network: opts.network, address, txHash, from };
 }
 
 function writeDeployLog(network: string, contractName: string, info: { address: Hex; txHash: Hex; args: unknown[]; from?: Hex }): void {

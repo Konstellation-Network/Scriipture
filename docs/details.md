@@ -264,7 +264,7 @@ mint(to: Address, amount: bigint): void {
 | `number` | `uint256` |
 | `boolean` | `bool` |
 | `string` (state) | `string` |
-| `string` (param/local) | `string memory`; `string calldata` for parameters the optimizer proves are never written |
+| `string` (param/local) | `string memory`; `string calldata` when the optimizer can prove the parameter is never written **and** the function is never called from inside the contract (a calldata parameter cannot accept a memory or storage argument) |
 | `Uint8` … `Uint256` | `uint8` … `uint256` (any multiple of 8) |
 | `Int8` … `Int256` | `int8` … `int256` (any multiple of 8) |
 | `Address` | `address` |
@@ -405,6 +405,8 @@ Transpiles `.ts` contracts in `<input>` to `.sol` in `out/sol/`. Runs optimizer 
 
 Pass `--no-optimize` to skip optimization (useful for debugging).
 
+`build` runs the validator first and writes nothing if it reports an error. Some constructs can only be emitted by guessing — a `?? fallback` whose left-hand type cannot be inferred, a destructuring with no known shape — and a guess produces a contract that compiles but is not the program you wrote. Pass `--no-validate` to emit anyway.
+
 The `pack-slots` pass is **advisory**: it reports how many storage slots you would save by declaring state variables in a different order, but never reorders them itself, because reordering rewrites the contract's storage layout (fatal for upgradeable proxies, and the kind of drift the audit tooling exists to flag). Pass `--reorder-storage` to apply the suggested order on a fresh, non-upgradeable contract.
 
 ### `validate <input>`
@@ -473,7 +475,16 @@ npx scriipture secure-deploy contracts -c MyToken -n base \
 
 The justification is recorded on every skipped gate in the attestation bundle, the same way `@unsafe("…")` and `@allow*("…")` justifications are. Mythril (Gate 4) is opt-in via `--deep` and does not need a justification; it is recorded as `skipped` with `optIn: true`.
 
-After the deploy transaction is mined, `secure-deploy` rewrites the contract's attestation with a `deployment` record (`network`, `address`, `txHash`, `from`, `deployedAt`) and prints the new fingerprint, so the gate results are tied to the address they cleared. `secure-deploy` accepts the same `--skip`, `--fuzz-runs`, `--mythril-timeout` and `--deep` flags as `verify`.
+**What is deployed is what was verified.** Gate 2 writes the artifacts it compiled to `out/artifacts/`, and `secure-deploy` deploys from there rather than from whatever `scriipture compile` last left on disk. After the transaction is mined it rewrites the contract's attestation with a `deployment` record and prints the new fingerprint, so the gate results are tied to the address they cleared:
+
+| Field | Meaning |
+|---|---|
+| `network`, `address`, `txHash`, `from`, `deployedAt` | where it went |
+| `artifactDeployedBytecode` | sha256 of the bytecode actually sent — **must** equal `hashes.deployedBytecode`, or `secure-deploy` refuses to stamp and exits non-zero |
+| `onchainDeployedBytecode` | sha256 of `eth_getCode(address)` after the deploy, when the node could be reached |
+| `onchainMatchesArtifact` | whether those two agree. `false` is normal for a contract with immutables or linked libraries, since those are substituted at construction; both hashes are recorded either way |
+
+Without that binding an attestation could assert that audited source lives at an address whose code nobody compared — a stale `out/artifacts/` file is enough to make it false. `secure-deploy` accepts the same `--skip`, `--fuzz-runs`, `--mythril-timeout` and `--deep` flags as `verify`.
 
 ### `verify-source <Contract> -n <network>`
 

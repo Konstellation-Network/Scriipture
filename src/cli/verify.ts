@@ -77,6 +77,11 @@ export interface VerifyResult {
   /** Every per-contract gate result, exactly as written to the attestation bundles. */
   gates: ContractGateResult[];
   attestations: Array<{ contract: string; path: string; fingerprint: string }>;
+  /**
+   * Where gate 2's artifacts were written. `secure-deploy` deploys from here so
+   * that what goes on chain is what the gates hashed.
+   */
+  artifactsDir: string;
 }
 
 export async function verifyCommand(input: string, opts: VerifyOptions): Promise<VerifyResult> {
@@ -92,16 +97,17 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const solDir = path.join(outDir, "sol");
   const auditDir = path.join(outDir, "audit");
   const forgeRoot = path.join(outDir, "forge");
+  const artifactsDir = path.join(outDir, "artifacts");
   fs.mkdirSync(solDir, { recursive: true });
   fs.mkdirSync(auditDir, { recursive: true });
 
-  const { program } = parseContractFiles(files);
+  const { program, diagnostics: parseDiagnostics } = parseContractFiles(files);
   const optimizations = optimizeProgram(program, { reorderStorage: opts.reorderStorage });
   const emitted = emitProgram(program);
 
   for (const e of emitted) fs.writeFileSync(path.join(solDir, `${e.name}.sol`), e.solidity, "utf8");
 
-  const allResults: VerifyResult = { ok: true, gates: [], attestations: [] };
+  const allResults: VerifyResult = { ok: true, gates: [], attestations: [], artifactsDir };
   const contractGates = new Map<string, GateResult[]>();
   for (const c of program.contracts) contractGates.set(c.name, []);
   const record = (contractName: string, result: GateResult): void => {
@@ -115,7 +121,13 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
 
   // Gate 1 — native validator (secure mode)
   banner("Gate 1/9 — native validator (secure mode)");
-  const native = validateProgram(program, { secure: true });
+  // A parse diagnostic means something in the source could not be represented
+  // at all, so the emitted Solidity does not say what the TypeScript said.
+  // Those must fail the gate, not be dropped on the floor.
+  const native = [
+    ...parseDiagnostics.map((d) => ({ rule: "parse", severity: "error" as const, message: d.message, loc: d.loc })),
+    ...validateProgram(program, { secure: true }),
+  ];
   const nativeErrors = native.filter((d) => d.severity === "error");
   const gate1Ok = nativeErrors.length === 0;
   for (const c of program.contracts) {
@@ -135,7 +147,15 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const gate2Ok = compileResult.errors.length === 0;
   recordAll(gate2Ok ? gatePassed("solc-compile", "clean") : gateFailed("solc-compile", `${compileResult.errors.length} compile error(s)`));
   if (!gate2Ok) allResults.ok = false;
-  reportGate(gate2Ok, gate2Ok ? "clean" : `${compileResult.errors.length} error(s)`);
+  if (gate2Ok) {
+    // Write what was just verified so `secure-deploy` cannot deploy anything else.
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    for (const a of compileResult.artifacts) {
+      fs.writeFileSync(path.join(artifactsDir, `${a.contractName}.json`), JSON.stringify(a, null, 2), "utf8");
+    }
+    fs.writeFileSync(path.join(artifactsDir, "solc-input.json"), compileResult.standardJsonInput, "utf8");
+  }
+  reportGate(gate2Ok, gate2Ok ? `clean — ${compileResult.artifacts.length} artifact(s) → ${artifactsDir}` : `${compileResult.errors.length} error(s)`);
   for (const e of compileResult.errors.slice(0, 3)) console.error(pc.red(`  ${e.split("\n")[0]}`));
 
   // Gate 3 — SMTChecker
