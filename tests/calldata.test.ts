@@ -59,6 +59,28 @@ describe("calldata-params only where calldata is legal", () => {
     expect(r.errors).toEqual([]);
   }, 60_000);
 
+  it("keeps memory on a param passed to an own function that writes to it, through any number of hops", () => {
+    // A calldata argument is copied into a memory parameter, so the caller would stop seeing the write.
+    const s = build("tests/contracts/CalldataFlow.ts");
+    expect(s).toContain("function bumpAndRead(uint256[] memory values) external");
+    expect(s).toContain("function bumpViaHelper(uint256[] memory values) external");
+    expect(s).toContain("function sumOf(uint256[] calldata values) external");
+  });
+
+  it("sees an own function called from a for-initializer as an internal call site", () => {
+    const s = build("tests/contracts/CalldataFlow.ts");
+    expect(s).toContain("function start(uint256[] memory values) public");
+    expect(s).toContain("for (uint256 i = start(xs); i < 3; ) {");
+  });
+
+  it("the flow fixture compiles under solc", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-calldata-flow-"));
+    const file = path.join(dir, "CalldataFlow.sol");
+    fs.writeFileSync(file, build("tests/contracts/CalldataFlow.ts"), "utf8");
+    const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
+    expect(r.errors).toEqual([]);
+  }, 60_000);
+
   it("maps string .length to bytes(...).length", () => {
     expect(sol()).toContain("return bytes(s).length;");
   });

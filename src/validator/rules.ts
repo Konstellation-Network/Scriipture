@@ -11,7 +11,7 @@ import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
-import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, typeEnvFor } from "../mapper/infer";
+import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, typeEnvFor, walkScoped } from "../mapper/infer";
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -257,11 +257,10 @@ const RULES: Rule[] = [
  */
 function ruleNullishFallback(contract: IRContract, fn: IRFunction): Diagnostic[] {
   const out: Diagnostic[] = [];
-  const env = typeEnvFor(contract, fn);
-  walkStatements(fn.body, (stmt) => {
+  walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
     walkExpressionsInStatement(stmt, (e) => {
       if (e.kind !== "nullish" || isZeroLiteral(e.right)) return;
-      const type = inferType(e.left, env);
+      const type = inferType(e.left, scope);
       const test = emptinessTest(type);
       if (test && hasSideEffects(e.left)) {
         out.push({

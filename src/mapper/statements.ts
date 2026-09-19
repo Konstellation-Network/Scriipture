@@ -1,11 +1,21 @@
 import type { IRStatement } from "../ir/types";
 import { solidityType } from "./types";
 import { emitExpression, type EmitContext } from "./expressions";
-import { destructureTypes, localDeclaration } from "./infer";
+import { declareLocal, destructureTypes, enterScope, localDeclaration } from "./infer";
 
+/**
+ * Emit a block. Each statement is emitted in the scope of the locals declared
+ * before it in this block or an enclosing one -- the same scoping `walkScoped`
+ * gives the validator -- so a `const p` in one branch of an `if` says nothing
+ * about the `p` in the other.
+ */
 export function emitStatements(stmts: IRStatement[], ctx: EmitContext, indent: string): string[] {
+  const scope = enterScope(ctx);
   const lines: string[] = [];
-  for (const stmt of stmts) lines.push(...emitStatement(stmt, ctx, indent));
+  for (const stmt of stmts) {
+    lines.push(...emitStatement(stmt, scope, indent));
+    declareLocal(stmt, scope);
+  }
   return lines;
 }
 
@@ -29,13 +39,16 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return lines;
     }
     case "for": {
-      const initStr = stmt.init ? emitForInit(stmt.init, ctx) : "";
-      const testStr = stmt.test ? emitExpression(stmt.test, ctx) : "";
-      const updateInner = stmt.update ? emitExpression(stmt.update, ctx) : "";
+      // The initializer's local is scoped to the loop: visible to test, update and body, not after.
+      const loop = enterScope(ctx);
+      const initStr = stmt.init ? emitForInit(stmt.init, loop) : "";
+      if (stmt.init) declareLocal(stmt.init, loop);
+      const testStr = stmt.test ? emitExpression(stmt.test, loop) : "";
+      const updateInner = stmt.update ? emitExpression(stmt.update, loop) : "";
       const updateStr = stmt.uncheckedIncrement && updateInner ? "" : updateInner;
       const lines: string[] = [];
       lines.push(`${indent}for (${initStr}; ${testStr}; ${updateStr}) {`);
-      lines.push(...emitStatements(stmt.body, ctx, indent + "    "));
+      lines.push(...emitStatements(stmt.body, loop, indent + "    "));
       if (stmt.uncheckedIncrement && updateInner) {
         lines.push(`${indent}    unchecked { ${updateInner}; }`);
       }
@@ -96,7 +109,8 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
 
 function emitForInit(init: IRStatement, ctx: EmitContext): string {
   if (init.kind === "let") {
-    const typeStr = init.type ? solidityType(init.type) : "uint256";
+    const { type } = localDeclaration(init, ctx);
+    const typeStr = type ? solidityType(type) : "uint256";
     const initStr = init.init ? ` = ${emitExpression(init.init, ctx)}` : "";
     return `${typeStr} ${init.name}${initStr}`;
   }
