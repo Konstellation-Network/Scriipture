@@ -531,7 +531,7 @@ const FORGE_STD_MISSING = "forge-std could not be fetched (git clone failed — 
 
 async function runForge(root: string, args: string[]): Promise<{ status: number | null }> {
   const forge = await resolveTool("forge");
-  const r = spawnSync(forge.cmd, [...forge.argPrefix, "test", "--root", root, ...args], { stdio: "inherit" });
+  const r = spawnSync(forge.cmd, [...forge.argPrefix, "test", "--root", root, ...args], { stdio: "inherit", env: process.env });
   return { status: r.status };
 }
 
@@ -542,7 +542,7 @@ function ensureForgeProject(root: string): boolean {
   if (!fs.existsSync(stdPath)) {
     const dest = path.join(root, "lib", "forge-std");
     fs.rmSync(dest, { recursive: true, force: true }); // a half-cloned tree from an earlier failure
-    spawnSync("git", ["clone", "--depth", "1", "https://github.com/foundry-rs/forge-std", dest], { stdio: "inherit" });
+    spawnSync("git", ["clone", "--depth", "1", "https://github.com/foundry-rs/forge-std", dest], { stdio: "inherit", env: process.env });
   }
   // Resolve OpenZeppelin the same way the compiler does, so this works when
   // scriipture is an installed dependency and node_modules is not in cwd.

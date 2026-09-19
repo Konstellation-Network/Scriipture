@@ -65,7 +65,7 @@ export async function auditPackCommand(input: string, opts: AuditPackOptions): P
 
     if (!opts.noZip) {
       const zipPath = path.join(auditRoot, `${contract.name}.zip`);
-      const r = spawnSync("zip", ["-r", "-q", zipPath, contract.name], { cwd: auditRoot });
+      const r = spawnSync("zip", ["-r", "-q", zipPath, contract.name], { cwd: auditRoot, env: process.env });
       if (r.status === 0) {
         console.log(pc.green(`packed ${zipPath}`));
       } else {
