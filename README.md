@@ -118,7 +118,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 |---|---|---|
 | 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 18 rules |
 | 2 | solc | syntax and type errors |
-| 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — Z3-backed proofs via a native `solc` (`brew install solidity`); recorded as skipped, never clean, when no solver can run |
+| 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — needs a native `solc` built with a Horn solver (`scriipture doctor` tells you whether yours is; the version number does not). Recorded as skipped, never as clean, when no solver can run |
 | 4 | Mythril | symbolic execution (opt-in via `--deep`) |
 | 5 | Slither | 70+ vulnerability detectors |
 | 6 | Pattern library | only known-safe OpenZeppelin v5 and forge-std imports allowed |

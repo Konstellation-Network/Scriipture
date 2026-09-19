@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { compileSolidity, isSmtDiagnostic, smtSeverity, isSolverUnavailable, nativeSolc, probeModelChecker } from "../src/compiler/solc";
+import { compileSolidity, isSmtDiagnostic, smtSeverity, smtKind, isSolverUnavailable, nativeSolc, probeModelChecker } from "../src/compiler/solc";
 import { ConfigSchema } from "../src/config/schema";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -61,6 +61,13 @@ describe("SMTChecker message classification", () => {
     expect(isSmtDiagnostic({ message: "Warning: Unused local variable." })).toBe(false);
   });
 
+  it("separates an assertion violation from an arithmetic one", () => {
+    expect(smtKind("CHC: Assertion violation happens here.")).toBe("assertion");
+    expect(smtKind("BMC: Overflow (resulting value larger than 2**256 - 1) happens here.")).toBe("arithmetic");
+    expect(smtKind("CHC: Division by zero happens here.")).toBe("arithmetic");
+    expect(smtKind("CHC: 3 verification condition(s) proved safe!")).toBe("other");
+  });
+
   it("reads the verdict from the message, not from solc's severity", () => {
     // Every SMTChecker finding arrives as a warning or an info, never an error.
     expect(smtSeverity("CHC: Assertion violation happens here.")).toBe("error");
@@ -87,6 +94,7 @@ describe("SMTChecker capture through a native solc", () => {
       expect(r.modelChecker?.version).toContain("0.8.37");
       expect(r.smtFindings).toHaveLength(1);
       expect(r.smtFindings[0]!.severity).toBe("error");
+      expect(r.smtFindings[0]!.kind).toBe("assertion");
       expect(r.smtFindings[0]!.errorCode).toBe("6328");
       expect(r.smtFindings[0]!.file).toBe("fixtures-smt.sol");
       expect(r.warnings).toEqual([]); // it must not be filed away as an ordinary warning
@@ -97,6 +105,7 @@ describe("SMTChecker capture through a native solc", () => {
     withFakeSolc(UNPROVED, 0, () => {
       const r = run();
       expect(r.smtFindings.map((f) => f.severity)).toEqual(["warning"]);
+      expect(r.smtFindings[0]!.kind).toBe("arithmetic");
       expect(r.smtFindings[0]!.errorCode).toBe("4984");
     });
   });

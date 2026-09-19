@@ -23,7 +23,7 @@ export type { PackedLayout } from "./optimizer/pack-slots";
 
 export { compileSolidity } from "./compiler/solc";
 export type { CompileInput, CompileResult, CompiledArtifact, SMTCheckerFinding, ModelCheckerStatus } from "./compiler/solc";
-export { nativeSolc, probeModelChecker, isSmtDiagnostic, smtSeverity, isSolverUnavailable } from "./compiler/solc";
+export { nativeSolc, probeModelChecker, isSmtDiagnostic, smtSeverity, smtKind, isSolverUnavailable } from "./compiler/solc";
 
 export { buildSourceMap } from "./sourcemaps/emit";
 export type { SourceMap, SourceMapEntry } from "./sourcemaps/emit";
@@ -60,10 +60,10 @@ export { setPluginRegistry, getPluginRegistry } from "./plugin/api";
 export { loadPlugins } from "./plugin/loader";
 
 export { runSlither, slitherInstalled } from "./audit/slither";
-export type { SlitherFinding, SlitherResult } from "./audit/slither";
+export type { SlitherFinding, SlitherResult, SlitherFailure } from "./audit/slither";
 
 export { runMythril, mythrilInstalled } from "./audit/mythril";
-export type { MythrilFinding, MythrilResult, MythrilOptions } from "./audit/mythril";
+export type { MythrilFinding, MythrilResult, MythrilFailure, MythrilOptions } from "./audit/mythril";
 
 export { renderAuditNotes } from "./audit/notes";
 

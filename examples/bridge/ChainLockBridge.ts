@@ -54,6 +54,9 @@ export class ChainLockBridge {
   addValidator(account: Address, weight: bigint): void {
     require(weight > 0n, "Zero weight");
     require(weight <= 1000n, "Weight too high");
+    // invariantValidatorWeightSane asserts this bound; nothing enforced it, so
+    // 1001 validators at the per-validator cap could break it.
+    require(this.totalWeight + weight <= 1000000n, "Total validator weight cap");
     const existing: bigint = this.validators.get(account) ?? 0n;
     require(existing == 0n, "Already validator");
     this.validators.set(account, weight);

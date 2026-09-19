@@ -156,8 +156,8 @@ jobs:
       - name: compile every example contract
         run: bun run cli compile out/sol
 
-      - name: full verify pipeline (skip forge runs — they need a forge-std clone; SMTChecker + invariant proofs still run via native solc)
-        run: bun run cli verify examples --skip fuzz,fuzz-run
+      - name: full verify pipeline (only the forge runs are skipped — they need a forge-std clone; harness generation, SMTChecker and the invariant proofs all run)
+        run: bun run cli verify examples --skip fuzz-run
 
       - name: gasdiff baseline
         run: bun run cli gasdiff examples
