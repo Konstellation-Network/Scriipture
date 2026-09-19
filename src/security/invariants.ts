@@ -149,6 +149,17 @@ export function classifyInvariantProofs(
   return { proven, unproven: Array.from(unproven), violated: Array.from(violated) };
 }
 
+/**
+ * What a proof attempt should be recorded as. `passed` has to mean "the solver
+ * proved at least one of these"; a run where it settled nothing is a hole in
+ * the attestation, not a pass, because a reader takes `passed` for `proved`.
+ */
+export function proofStatus(verdict: InvariantProofResult): "failed" | "skipped" | "passed" {
+  if (verdict.violated.length > 0) return "failed";
+  if (verdict.proven.length === 0) return "skipped";
+  return "passed";
+}
+
 function path_basename(p: string): string {
   return p.split("/").pop() ?? p;
 }

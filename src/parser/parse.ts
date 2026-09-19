@@ -49,11 +49,9 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
         const en = parseEnumDecl(node, ctx);
         ctx.enums.set(en.name, en);
       } else if (ts.isInterfaceDeclaration(node)) {
-        const st = parseStructDecl(node.name.text, node.members, node, ctx);
-        ctx.structs.set(st.name, st);
+        registerStruct(node.name.text, node.members, node, ctx);
       } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
-        const st = parseStructDecl(node.name.text, node.type.members, node, ctx);
-        ctx.structs.set(st.name, st);
+        registerStruct(node.name.text, node.type.members, node, ctx);
       }
     });
 
@@ -331,27 +329,54 @@ function parseEnumDecl(node: ts.EnumDeclaration, ctx: ParseContext): IREnumDecl 
   return { name: node.name.text, members, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) };
 }
 
+/**
+ * Register a file-level `interface` / object `type` as a struct -- but only if
+ * it actually describes one.
+ *
+ * A file may legitimately declare interfaces that are not structs at all (a
+ * callback shape, a type for a TS consumer). Emitting `struct IFoo {}` for
+ * those produces Solidity solc rejects, so an declaration with no struct
+ * fields is quietly not a struct. One that has fields *and* members that
+ * cannot be lowered is reported and left unregistered, rather than emitted as
+ * a half-struct that silently drops state.
+ */
+function registerStruct(
+  name: string,
+  members: ts.NodeArray<ts.TypeElement>,
+  node: ts.Node,
+  ctx: ParseContext,
+): void {
+  const { decl, problems } = parseStructDecl(name, members, node, ctx);
+  if (decl.fields.length === 0) return; // not a struct: nothing to lower, and nothing to complain about
+  if (problems.length > 0) {
+    for (const p of problems) ctx.diagnostics.push(p);
+    return;
+  }
+  ctx.structs.set(decl.name, decl);
+}
+
 function parseStructDecl(
   name: string,
   members: ts.NodeArray<ts.TypeElement>,
   node: ts.Node,
   ctx: ParseContext,
-): IRStructDecl {
+): { decl: IRStructDecl; problems: ParseDiagnostic[] } {
   const fields: IRParam[] = [];
+  const problems: ParseDiagnostic[] = [];
   for (const m of members) {
     if (!ts.isPropertySignature(m) || !m.type) {
-      ctx.diagnostics.push({
+      problems.push({
         message: `struct ${name}: only typed property fields are supported (methods, index signatures and call signatures have no Solidity equivalent)`,
         loc: loc(m, ctx),
       });
       continue;
     }
     if (m.questionToken) {
-      ctx.diagnostics.push({ message: `struct ${name}.${m.name.getText(ctx.sourceFile)}: Solidity struct fields cannot be optional`, loc: loc(m, ctx) });
+      problems.push({ message: `struct ${name}.${m.name.getText(ctx.sourceFile)}: Solidity struct fields cannot be optional`, loc: loc(m, ctx) });
     }
     fields.push({ name: m.name.getText(ctx.sourceFile), type: parseType(m.type, ctx) });
   }
-  return { name, fields, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) };
+  return { decl: { name, fields, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) }, problems };
 }
 
 /** `Uint8` … `Uint256`, `Int8` … `Int256`, `Bytes1` … `Bytes32` → the matching Solidity primitive. */

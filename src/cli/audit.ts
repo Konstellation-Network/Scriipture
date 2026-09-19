@@ -3,7 +3,7 @@ import path from "node:path";
 import pc from "picocolors";
 import { parseContractFiles } from "../parser/parse";
 import { validateProgram } from "../validator/rules";
-import { formatDiagnostic } from "../validator/diagnostics";
+import { formatDiagnostic, parseDiagnosticsAsErrors } from "../validator/diagnostics";
 import { runSlither } from "../audit/slither";
 import { collectTsFiles } from "./parse";
 import type { SourceMap } from "../sourcemaps/emit";
@@ -20,8 +20,10 @@ export async function auditCommand(input: string, opts: AuditOptions): Promise<v
     process.exit(1);
   }
 
-  const { program } = parseContractFiles(files);
-  const native = validateProgram(program);
+  const { program, diagnostics: parseDiagnostics } = parseContractFiles(files);
+  // A construct that could not be parsed never reaches the validator, and the
+  // user would otherwise only see it as a confusing solc error at compile time.
+  const native = [...parseDiagnosticsAsErrors(parseDiagnostics), ...validateProgram(program)];
 
   const outDir = path.resolve(opts.out ?? "out/sol");
   const solFiles: string[] = [];

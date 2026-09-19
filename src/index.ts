@@ -14,7 +14,7 @@ export type { EmitOptions, EmittedContract } from "./emitter/emit";
 export { validateProgram, validateContract } from "./validator/rules";
 export type { ValidateOptions } from "./validator/rules";
 export type { Diagnostic, Severity } from "./validator/diagnostics";
-export { formatDiagnostic } from "./validator/diagnostics";
+export { formatDiagnostic, parseDiagnosticsAsErrors } from "./validator/diagnostics";
 
 export { optimizeProgram, optimizeContract, PASSES as OPTIMIZER_PASSES } from "./optimizer/passes";
 export type { OptimizationReport, OptimizationChange, OptimizeOptions, Pass } from "./optimizer/passes";
@@ -23,7 +23,7 @@ export type { PackedLayout } from "./optimizer/pack-slots";
 
 export { compileSolidity } from "./compiler/solc";
 export type { CompileInput, CompileResult, CompiledArtifact, SMTCheckerFinding, ModelCheckerStatus } from "./compiler/solc";
-export { nativeSolc } from "./compiler/solc";
+export { nativeSolc, probeModelChecker, isSmtDiagnostic, smtSeverity, isSolverUnavailable } from "./compiler/solc";
 
 export { buildSourceMap } from "./sourcemaps/emit";
 export type { SourceMap, SourceMapEntry } from "./sourcemaps/emit";
@@ -68,7 +68,7 @@ export type { MythrilFinding, MythrilResult, MythrilOptions } from "./audit/myth
 export { renderAuditNotes } from "./audit/notes";
 
 export { generateFuzzHarness } from "./security/fuzz-gen";
-export { collectInvariants, renderInvariantTest, renderSmtInvariantHarness, classifyInvariantProofs } from "./security/invariants";
+export { collectInvariants, renderInvariantTest, renderSmtInvariantHarness, classifyInvariantProofs, proofStatus } from "./security/invariants";
 export type { InvariantSpec, InvariantProofResult } from "./security/invariants";
 export { checkPatterns, hashBytecode } from "./security/pattern-library";
 export {

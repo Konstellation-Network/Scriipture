@@ -439,7 +439,7 @@ npx scriipture verify contracts --skip fuzz,invariants,patterns
 npx scriipture verify contracts --fuzz-runs 5000
 ```
 
-Every gate result in the attestation carries an explicit `status`: `passed`, `failed`, `skipped`, or `not-applicable` (the gate had nothing to check, e.g. no `@invariant` declared). A skipped gate is recorded as skipped, never as passed, so an auditor can always tell "clean" from "never ran". `passed` is `true` only for `status: "passed"`.
+Every gate result in the attestation carries an explicit `status`: `passed`, `failed`, `skipped`, or `not-applicable` (the gate had nothing to check, e.g. no `@invariant` declared, or no method with fuzzable parameters). A skipped gate is recorded as skipped, never as passed, so an auditor can always tell "clean" from "never ran". `passed` is `true` only for `status: "passed"`. Gates that depend on an external engine also record `engine`, e.g. `"native-solc 0.8.37+commit.f401782d"`, because two solc builds of the same version differ in whether they can run the SMTChecker at all.
 
 ### `gasdiff <input>`
 
@@ -532,13 +532,34 @@ Environment check (see [§3](#3-scriipture-doctor)).
 |---|---|---|---|---|
 | 1 | **native-validator** (secure mode) | Scriipture | 16 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
-| 3 | **SMTChecker** | native `solc` (Z3/CHC engine) | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. Needs a native `solc` on the PATH (`brew install solidity`); the bundled solc-js cannot run Z3, and the gate is then recorded as **skipped**, never as clean | 15s timeout per query |
+| 3 | **SMTChecker** | native `solc` **built with a Horn solver** | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. See [Getting a solc that can actually run it](#smt-solver) — without one the gate is recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
 | 5 | **Slither** | Slither 0.11+ | 70+ vulnerability detectors — reentrancy, arbitrary-send, dangerous strict equality, locked ether, weak-randomness, … | ~10-30s |
 | 6 | **pattern-library** | Scriipture | inherited bases and imports must be from the known-safe list (OpenZeppelin v5, forge-std) | <1s |
 | 7 | **fuzz-harness** | forge | auto-generates 1 fuzz test per public method, runs 1000 random inputs each, catches unexpected reverts | depends on `--fuzz-runs` |
-| 8 | **invariant-tests** + **invariant-proof** | forge, then native `solc` SMTChecker | `@invariant` decorators emit forge invariant tests (random call sequences — *evidence*, not proof) **and** an SMTChecker harness that asserts each invariant so the CHC engine can try to prove it over every reachable state (*proof*, when the solver finishes). The attestation records, per invariant, proven / unproven / violated | forge: similar to fuzz; SMT: 15s per query |
+| 8 | **invariant-tests** + **invariant-proof** | forge, then native `solc` SMTChecker | `@invariant` decorators emit forge invariant tests (random call sequences — *evidence*, not proof) **and** an SMTChecker harness that asserts each invariant so the CHC engine can try to prove it over every reachable state (*proof*, when the solver finishes). The attestation records, per invariant, proven / unproven / violated. A run where the solver settled **nothing** is recorded as `skipped`, not `passed`: an auditor reads `passed` as *proved* | forge: similar to fuzz; SMT: 15s per query |
 | 9 | **attestation** | Scriipture | reproducible-build manifest with TS hash, Sol hash, bytecode hash, every tool version, every gate result with an explicit `passed` / `failed` / `skipped` / `not-applicable` status (plus the operator's justification for any skip), canonical-JSON fingerprint | <1s |
+
+<a id="smt-solver"></a>
+### Getting a solc that can actually run the SMTChecker
+
+Gate 3 and the invariant proof stage need a `solc` on your PATH that was built with a Horn solver (Z3 or Eldarica). **Two builds reporting the same version differ on this**, so `solc --version` does not answer the question — and the bundled `solc-js` cannot start a solver at all, so a native binary is always required.
+
+Ask the tool, which compiles a throwaway contract through the model checker and reports what happened:
+
+```bash
+scriipture doctor
+# SMTChecker (gates 3 and 8) — needs a solc built with a Horn solver
+#   ✓ native-solc 0.8.37+commit.f401782d
+# …or…
+#   ✗ CHC analysis was not possible since no Horn solver was found and enabled.
+```
+
+Known: the official `solc-macos` release binary is built without Z3, so installing "the latest solc" is not enough. Distribution packages built with `-DUSE_Z3=ON` and the `ethereum/solc` Docker images are the usual way to get one; verify with `scriipture doctor` rather than by version number.
+
+Scriipture never guesses. When solc reports `7649 CHC analysis was not possible since no Horn solver was found and enabled` or `8158 Solver z3 was selected for SMTChecker but it is not available`, when the process crashes or is killed, or when solc-js fails to start its thread, the gate is recorded as `skipped` with that reason and the engine that was tried — not as `0 findings`.
+
+Because SMTChecker reports every finding through solc's *warning* channel and never its *error* channel, Scriipture reads the verdict from the message rather than the severity: `… happens here` is a counterexample the solver found and fails the gate; `… might happen here` is a property it could not settle and is recorded as unproved.
 
 ### Why Mythril is opt-in
 
