@@ -464,7 +464,7 @@ npx scriipture deploy MyToken -n base-sepolia --no-verify
 
 Full pipeline: runs `verify` (all 9 gates), refuses to deploy unless every gate passes, then deploys. Designed for production where deploy without prior verification is unacceptable.
 
-It also refuses to deploy when any gate was **skipped** (`--no-smt`, `--no-slither`, `--no-fuzz`, `--no-invariants`, `--no-patterns`): an attestation with a hole in it is not an attestation. To ship anyway, say why:
+It also refuses to deploy when any gate was **skipped**: an attestation with a hole in it is not an attestation. That covers the `--no-*` flags, and equally a gate that could not run — most often gates 3 and 8 on a machine with no solc built with a Horn solver. To ship anyway, say why:
 
 ```bash
 npx scriipture secure-deploy contracts -c MyToken -n base \
@@ -559,7 +559,17 @@ Known: the official `solc-macos` release binary is built without Z3, so installi
 
 Scriipture never guesses. When solc reports `7649 CHC analysis was not possible since no Horn solver was found and enabled` or `8158 Solver z3 was selected for SMTChecker but it is not available`, when the process crashes or is killed, or when solc-js fails to start its thread, the gate is recorded as `skipped` with that reason and the engine that was tried — not as `0 findings`.
 
-Because SMTChecker reports every finding through solc's *warning* channel and never its *error* channel, Scriipture reads the verdict from the message rather than the severity: `… happens here` is a counterexample the solver found and fails the gate; `… might happen here` is a property it could not settle and is recorded as unproved.
+Because SMTChecker reports every finding through solc's *warning* channel and never its *error* channel, Scriipture reads the verdict from the message rather than the severity: `… happens here` is a counterexample the solver found, `… might happen here` is a property it could not settle and is recorded as unproved.
+
+What blocks, and what is only reported:
+
+| Finding | Gate 3 |
+|---|---|
+| a proven **assertion violation** (`assert` can fail, which is what a generated `@invariant` harness asserts) | **fails** |
+| a proven **arithmetic** issue — overflow, underflow, division by zero, popping an empty array | reported, does not fail: under Solidity 0.8 these revert rather than corrupt state |
+| anything the solver could not settle (`might happen here`) | reported as unproved |
+
+Every finding is written to the attestation with its `kind` and `severity`, so an auditor can apply a stricter policy than the gate does.
 
 ### Why Mythril is opt-in
 

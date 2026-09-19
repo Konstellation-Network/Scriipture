@@ -153,27 +153,31 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     if (!smtResult.modelChecker?.ran) {
       // No solver ran: this is "never checked", not "0 findings".
       const reason = smtResult.modelChecker?.reason ?? "SMTChecker unavailable";
-      reportGate(true, `skipped — ${reason}`);
+      reportGate(true, `skipped — ${reason}`, true);
       recordAll({ ...skipped("smt-checker", `skipped (${reason})`), engine });
     } else {
       // SMTChecker never emits solc severity "error", so the verdict comes from
       // the message: "happens here" is a counterexample, "might happen here" is unproved.
-      const violations = smtResult.smtFindings.filter((f) => f.severity === "error");
+      // Only a proven assertion violation blocks: under Solidity 0.8 a proven
+      // overflow is a revert, not corrupted state, so it is reported not gated.
+      const violations = smtResult.smtFindings.filter((f) => f.severity === "error" && f.kind === "assertion");
+      const arithmetic = smtResult.smtFindings.filter((f) => f.severity === "error" && f.kind !== "assertion");
       const unproved = smtResult.smtFindings.filter((f) => f.severity === "warning");
       const gate3Ok = violations.length === 0;
       console.log(pc.dim(`  engine: ${engine}`));
       for (const c of program.contracts) {
         const mine = smtResult.smtFindings.filter((f) => path.basename(f.file ?? "") === `${c.name}.sol`);
-        const mineViolations = mine.filter((f) => f.severity === "error").length;
+        const mineViolations = mine.filter((f) => f.severity === "error" && f.kind === "assertion").length;
+        const mineArithmetic = mine.filter((f) => f.severity === "error" && f.kind !== "assertion").length;
         const mineUnproved = mine.filter((f) => f.severity === "warning").length;
-        const detail = `${mineViolations} violation(s), ${mineUnproved} unproved, ${mine.length} finding(s)`;
+        const detail = `${mineViolations} assertion violation(s), ${mineArithmetic} proven arithmetic revert(s), ${mineUnproved} unproved, ${mine.length} finding(s)`;
         record(c.name, {
           ...(mineViolations === 0 ? gatePassed("smt-checker", detail, mine.length) : gateFailed("smt-checker", detail, mine.length)),
           engine,
         });
       }
       if (!gate3Ok) allResults.ok = false;
-      reportGate(gate3Ok, `${violations.length} violation(s), ${unproved.length} unproved, ${smtResult.smtFindings.length} finding(s)`);
+      reportGate(gate3Ok, `${violations.length} assertion violation(s), ${arithmetic.length} proven arithmetic revert(s), ${unproved.length} unproved, ${smtResult.smtFindings.length} finding(s)`);
       for (const f of smtResult.smtFindings.slice(0, 3)) {
         const tag = f.severity === "error" ? pc.red : f.severity === "warning" ? pc.yellow : pc.dim;
         console.log(`  ${tag(`[${f.severity}]`)} ${f.message.split("\n")[0]}`);
@@ -202,13 +206,19 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     const errors = r.diagnostics.filter((d) => d.severity === "error");
     const gateMOk = errors.length === 0;
     for (const c of program.contracts) {
+      const failure = r.failures.find((f) => f.file === `${c.name}.sol`);
+      if (failure) {
+        // Mythril produced nothing for this contract; "0 findings" would read as clean.
+        record(c.name, skipped("mythril", `not analysed: ${failure.reason}`));
+        continue;
+      }
       const mine = r.findings.filter((f) => f.solFile === `${c.name}.sol`);
       const high = mine.filter((f) => f.severity === "error").length;
       const detail = `${mine.length} finding(s)`;
       record(c.name, high === 0 ? gatePassed("mythril", detail, mine.length) : gateFailed("mythril", detail, mine.length));
     }
     if (!gateMOk) allResults.ok = false;
-    reportGate(gateMOk, `${r.findings.length} issue(s), ${errors.length} high-severity`);
+    reportGate(gateMOk, `${r.findings.length} issue(s), ${errors.length} high-severity` + (r.failures.length > 0 ? `, ${r.failures.length} file(s) NOT analysed` : ""), r.failures.length > 0);
     for (const d of r.diagnostics.slice(0, 3)) {
       const tag = d.severity === "error" ? pc.red : pc.yellow;
       console.log(`  ${tag(`[${d.severity}]`)} ${d.rule}: ${d.message.split("\n")[0]}`);
@@ -233,13 +243,21 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     const errors = r.diagnostics.filter((d) => d.severity === "error");
     const gate4Ok = errors.length === 0;
     for (const c of program.contracts) {
+      const failure = r.failures.find((f) => f.file === `${c.name}.sol`);
+      if (failure) {
+        // Slither produced no usable analysis for this contract; "0 findings"
+        // would be indistinguishable from a contract it looked at and cleared.
+        record(c.name, skipped("slither", `not analysed: ${failure.reason}`));
+        console.log(`  ${pc.yellow("⚠")} ${c.name}: slither did not analyse this file — ${failure.reason}`);
+        continue;
+      }
       const mine = r.findings.filter((f) => f.solFile === `${c.name}.sol`);
       const high = mine.filter((f) => f.severity === "error").length;
       const detail = `${mine.length} finding(s)`;
       record(c.name, high === 0 ? gatePassed("slither", detail, mine.length) : gateFailed("slither", detail, mine.length));
     }
     if (!gate4Ok) allResults.ok = false;
-    reportGate(gate4Ok, `${r.findings.length} finding(s), ${errors.length} high-severity`);
+    reportGate(gate4Ok, `${r.findings.length} finding(s), ${errors.length} high-severity` + (r.failures.length > 0 ? `, ${r.failures.length} file(s) NOT analysed` : ""), r.failures.length > 0);
     for (const d of r.diagnostics.slice(0, 3)) {
       const tag = d.severity === "error" ? pc.red : pc.yellow;
       console.log(`  ${tag(`[${d.severity}]`)} ${d.rule}: ${d.message.split("\n")[0]}`);
@@ -489,8 +507,9 @@ function banner(label: string): void {
   console.log("");
   console.log(pc.bold(pc.cyan(label)));
 }
-function reportGate(ok: boolean, msg: string): void {
-  console.log(`  ${ok ? pc.green("✓") : pc.red("✗")} ${msg}`);
+function reportGate(ok: boolean, msg: string, partial = false): void {
+  const mark = !ok ? pc.red("✗") : partial ? pc.yellow("⚠") : pc.green("✓");
+  console.log(`  ${mark} ${msg}`);
 }
 
 const FORGE_STD_MISSING = "forge-std could not be fetched (git clone failed — offline?); forge did not run";

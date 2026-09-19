@@ -24,6 +24,17 @@ export interface SMTCheckerFinding {
    * - `info`: commentary, e.g. "N verification condition(s) proved safe!".
    */
   severity: "info" | "warning" | "error";
+  /**
+   * Which target the finding belongs to.
+   *
+   * - `assertion`: an `assert` that can fail — always a bug, and what the
+   *   generated `@invariant` harness asserts, so these block the gate.
+   * - `arithmetic`: overflow, underflow, division by zero, popping an empty
+   *   array. Under Solidity 0.8 these revert rather than corrupt state, so
+   *   they are reported but do not block; `showUnproved` makes them common.
+   * - `other`: everything else, including the "proved safe" notes.
+   */
+  kind: "assertion" | "arithmetic" | "other";
   message: string;
   /** solc's own error code, e.g. 6328 for an assertion violation. */
   errorCode?: string;
@@ -86,6 +97,13 @@ export function smtSeverity(message: string): "info" | "warning" | "error" {
   if (/\bhappens here\b/i.test(message)) return "error";
   if (/might happen here|might be|unproved|could not prove|cannot be proved/i.test(message)) return "warning";
   return "info";
+}
+
+/** Which class of property a finding is about; see `SMTCheckerFinding.kind`. */
+export function smtKind(message: string): "assertion" | "arithmetic" | "other" {
+  if (/assertion violation/i.test(message)) return "assertion";
+  if (/overflow|underflow|division by zero|empty array|out of bounds/i.test(message)) return "arithmetic";
+  return "other";
 }
 
 /**
@@ -186,6 +204,7 @@ export function compileSolidity({ solFiles, config, modelCheck = false }: Compil
         const loc = e.sourceLocation ?? {};
         smtFindings.push({
           severity: smtSeverity(String(e.message ?? msg)),
+          kind: smtKind(String(e.message ?? msg)),
           message: msg,
           errorCode: e.errorCode !== undefined ? String(e.errorCode) : undefined,
           file: loc.file,

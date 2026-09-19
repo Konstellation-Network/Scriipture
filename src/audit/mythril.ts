@@ -16,13 +16,26 @@ export interface MythrilFinding {
   solLine: number;
 }
 
+/** A file Mythril was asked about but did not analyse. Not the same as a clean file. */
+export interface MythrilFailure {
+  file: string;
+  reason: string;
+}
+
 export interface MythrilResult {
   ok: boolean;
   installed: boolean;
   findings: MythrilFinding[];
   diagnostics: Diagnostic[];
+  /** Files that produced no usable analysis: a crash, a timeout with no output, unparseable output. */
+  failures: MythrilFailure[];
   raw?: unknown;
   error?: string;
+}
+
+function failureReason(proc: { status: number | null; stderr?: string }): string {
+  const stderr = (proc.stderr || "").split("\n").map((l) => l.trim()).find(Boolean);
+  return stderr ?? `mythril exited ${proc.status ?? "abnormally"} with no output`;
 }
 
 export interface MythrilOptions {
@@ -41,7 +54,7 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
   try {
     tool = await resolveTool("myth");
   } catch (e: any) {
-    return { ok: false, installed: false, findings: [], diagnostics: [], error: e.message ?? String(e) };
+    return { ok: false, installed: false, findings: [], diagnostics: [], failures: [], error: e.message ?? String(e) };
   }
 
   const ozRoot = resolveOZRoot();
@@ -49,6 +62,7 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
   const timeout = String(opts.timeout ?? 90);
 
   const findings: MythrilFinding[] = [];
+  const failures: MythrilFailure[] = [];
   const diagnostics: Diagnostic[] = [];
   let raw: unknown;
 
@@ -64,7 +78,12 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
 
     const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
     let parsed: any;
-    try { parsed = JSON.parse(proc.stdout || "[]"); } catch { continue; }
+    try {
+      parsed = JSON.parse(proc.stdout || "");
+    } catch {
+      failures.push({ file: path.basename(file), reason: failureReason(proc) });
+      continue;
+    }
     raw = parsed;
 
     const reports = Array.isArray(parsed) ? parsed : [parsed];
@@ -106,5 +125,5 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
     }
   }
 
-  return { ok: true, installed: true, findings, diagnostics, raw };
+  return { ok: failures.length === 0, installed: true, findings, diagnostics, failures, raw };
 }
