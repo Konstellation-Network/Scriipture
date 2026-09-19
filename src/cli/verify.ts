@@ -7,6 +7,7 @@ import { emitProgram } from "../emitter/emit";
 import { optimizeProgram } from "../optimizer/passes";
 import { buildSourceMap } from "../sourcemaps/emit";
 import { validateProgram } from "../validator/rules";
+import { parseDiagnosticsAsErrors } from "../validator/diagnostics";
 import { loadConfig } from "../config/load";
 import { compileSolidity, resolveOZRoot } from "../compiler/solc";
 import { runSlither, slitherInstalled } from "../audit/slither";
@@ -18,6 +19,7 @@ import {
   renderInvariantTest,
   renderSmtInvariantHarness,
   classifyInvariantProofs,
+  proofStatus,
   SMT_HARNESS_SUFFIX,
 } from "../security/invariants";
 import { checkPatterns } from "../security/pattern-library";
@@ -124,10 +126,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   // A parse diagnostic means something in the source could not be represented
   // at all, so the emitted Solidity does not say what the TypeScript said.
   // Those must fail the gate, not be dropped on the floor.
-  const native = [
-    ...parseDiagnostics.map((d) => ({ rule: "parse", severity: "error" as const, message: d.message, loc: d.loc })),
-    ...validateProgram(program, { secure: true }),
-  ];
+  const native = [...parseDiagnosticsAsErrors(parseDiagnostics), ...validateProgram(program, { secure: true })];
   const nativeErrors = native.filter((d) => d.severity === "error");
   const gate1Ok = nativeErrors.length === 0;
   for (const c of program.contracts) {
@@ -165,27 +164,35 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     recordAll(skipped("smt-checker", "skipped (--no-smt)"));
   } else {
     const smtResult = compileSolidity({ solFiles, config, modelCheck: true });
+    const engine = engineLabel(smtResult.modelChecker);
     if (!smtResult.modelChecker?.ran) {
       // No solver ran: this is "never checked", not "0 findings".
       const reason = smtResult.modelChecker?.reason ?? "SMTChecker unavailable";
       reportGate(true, `skipped — ${reason}`);
-      recordAll(skipped("smt-checker", `skipped (${reason})`));
+      recordAll({ ...skipped("smt-checker", `skipped (${reason})`), engine });
     } else {
-    const smtErrors = smtResult.smtFindings.filter((f) => f.severity === "error");
-    const gate3Ok = smtErrors.length === 0;
-    console.log(pc.dim(`  engine: ${smtResult.modelChecker.engine} ${smtResult.modelChecker.version ?? ""}`));
-    for (const c of program.contracts) {
-      const mine = smtResult.smtFindings.filter((f) => path.basename(f.file ?? "") === `${c.name}.sol`);
-      const errors = mine.filter((f) => f.severity === "error").length;
-      const detail = `${mine.length} finding(s)`;
-      record(c.name, errors === 0 ? gatePassed("smt-checker", detail, mine.length) : gateFailed("smt-checker", detail, mine.length));
-    }
-    if (!gate3Ok) allResults.ok = false;
-    reportGate(gate3Ok, `${smtResult.smtFindings.length} finding(s), ${smtErrors.length} error(s)`);
-    for (const f of smtResult.smtFindings.slice(0, 3)) {
-      const tag = f.severity === "error" ? pc.red : pc.yellow;
-      console.log(`  ${tag(`[${f.severity}]`)} ${f.message.split("\n")[0]}`);
-    }
+      // SMTChecker never emits solc severity "error", so the verdict comes from
+      // the message: "happens here" is a counterexample, "might happen here" is unproved.
+      const violations = smtResult.smtFindings.filter((f) => f.severity === "error");
+      const unproved = smtResult.smtFindings.filter((f) => f.severity === "warning");
+      const gate3Ok = violations.length === 0;
+      console.log(pc.dim(`  engine: ${engine}`));
+      for (const c of program.contracts) {
+        const mine = smtResult.smtFindings.filter((f) => path.basename(f.file ?? "") === `${c.name}.sol`);
+        const mineViolations = mine.filter((f) => f.severity === "error").length;
+        const mineUnproved = mine.filter((f) => f.severity === "warning").length;
+        const detail = `${mineViolations} violation(s), ${mineUnproved} unproved, ${mine.length} finding(s)`;
+        record(c.name, {
+          ...(mineViolations === 0 ? gatePassed("smt-checker", detail, mine.length) : gateFailed("smt-checker", detail, mine.length)),
+          engine,
+        });
+      }
+      if (!gate3Ok) allResults.ok = false;
+      reportGate(gate3Ok, `${violations.length} violation(s), ${unproved.length} unproved, ${smtResult.smtFindings.length} finding(s)`);
+      for (const f of smtResult.smtFindings.slice(0, 3)) {
+        const tag = f.severity === "error" ? pc.red : f.severity === "warning" ? pc.yellow : pc.dim;
+        console.log(`  ${tag(`[${f.severity}]`)} ${f.message.split("\n")[0]}`);
+      }
     }
   }
 
@@ -292,7 +299,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
         harnessed.add(c.name);
         record(c.name, gatePassed("fuzz-harness-generated", h.filename));
       } else {
-        record(c.name, gateNotApplicable("fuzz-harness-generated", "ctor needs args or no public methods"));
+        record(c.name, gateNotApplicable("fuzz-harness-generated", "nothing to fuzz: the constructor needs arguments, or no reachable method takes fuzzable parameters"));
       }
     }
 
@@ -390,16 +397,18 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
         record(c.name, skipped("invariant-proof", `${invs.length} invariant(s) not proven (--no-smt)`));
         continue;
       }
-      // Kept out of out/sol so `compile out/sol` and Slither do not treat the harness as a deployable contract.
+      // Not out/sol: `compile out/sol` globs *.sol and would build the harness
+      // into a deployable artifact, and Slither would audit it as a contract.
       const smtDir = path.join(outDir, "smt");
       fs.mkdirSync(smtDir, { recursive: true });
       const harnessFile = `${c.name}${SMT_HARNESS_SUFFIX}.sol`;
       const harnessPath = path.join(smtDir, harnessFile);
       fs.writeFileSync(harnessPath, harness, "utf8");
       const r = compileSolidity({ solFiles: [path.join(solDir, `${c.name}.sol`), harnessPath], config, modelCheck: true });
+      const proofEngine = engineLabel(r.modelChecker);
       if (!r.modelChecker?.ran) {
         const reason = r.modelChecker?.reason ?? "SMTChecker unavailable";
-        record(c.name, skipped("invariant-proof", `${invs.length} invariant(s) not proven: ${reason}`));
+        record(c.name, { ...skipped("invariant-proof", `${invs.length} invariant(s) not proven: ${reason}`), engine: proofEngine });
         console.log(`  ${pc.yellow("⚠")} ${c.name}: SMT proof skipped — ${reason}`);
         continue;
       }
@@ -407,13 +416,20 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       const summary = `${verdict.proven.length}/${invs.length} proven by SMTChecker` +
         (verdict.unproven.length > 0 ? `; unproven (solver gave up): ${verdict.unproven.join(", ")}` : "") +
         (verdict.violated.length > 0 ? `; VIOLATED: ${verdict.violated.join(", ")}` : "");
-      if (verdict.violated.length > 0) {
-        record(c.name, gateFailed("invariant-proof", summary, verdict.violated.length));
-        allResults.ok = false;
-        reportGate(false, `${c.name}: ${summary}`);
-      } else {
-        record(c.name, gatePassed("invariant-proof", summary, verdict.unproven.length));
-        reportGate(true, `${c.name}: ${summary}`);
+      switch (proofStatus(verdict)) {
+        case "failed":
+          record(c.name, { ...gateFailed("invariant-proof", summary, verdict.violated.length), engine: proofEngine });
+          allResults.ok = false;
+          reportGate(false, `${c.name}: ${summary}`);
+          break;
+        case "skipped":
+          // The solver settled nothing. "passed" would read as "proved".
+          record(c.name, { ...skipped("invariant-proof", `${summary} — the solver settled none of them`), engine: proofEngine });
+          reportGate(true, `${c.name}: ${summary} (recorded as skipped, not proved)`);
+          break;
+        default:
+          record(c.name, { ...gatePassed("invariant-proof", summary, verdict.unproven.length), engine: proofEngine });
+          reportGate(true, `${c.name}: ${summary}`);
       }
     }
   }
@@ -476,6 +492,12 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   }
 
   return allResults;
+}
+
+/** "native-solc 0.8.37+commit.f401782d", or undefined when nothing ran. */
+function engineLabel(status: { engine?: string; version?: string } | undefined): string | undefined {
+  if (!status?.engine) return undefined;
+  return `${status.engine}${status.version ? ` ${status.version}` : ""}`;
 }
 
 function banner(label: string): void {

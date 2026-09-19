@@ -32,6 +32,12 @@ export interface GateResult {
   justification?: string;
   /** Gate is off unless explicitly enabled (Mythril `--deep`); skipping it needs no justification. */
   optIn?: boolean;
+  /**
+   * Which tool produced this verdict, e.g. "native-solc 0.8.37+commit.f401782d".
+   * Two solc builds of the same version differ in whether a Horn solver is
+   * compiled in, so the version alone does not say whether the check could run.
+   */
+  engine?: string;
 }
 
 export function gatePassed(name: string, detail?: string, findings?: number): GateResult {

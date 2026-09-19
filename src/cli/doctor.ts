@@ -38,9 +38,20 @@ const CHECKS: Check[] = [
     },
   },
   {
-    name: "solc (native, with Z3 — runs SMTChecker in gates 3 and 8)",
+    name: "SMTChecker (gates 3 and 8) — needs a solc built with a Horn solver",
     required: false,
-    probe: () => probeCmd("solc", "--version", "`brew install solidity`  — without it the SMTChecker gates are recorded as skipped (the bundled solc-js cannot run Z3)"),
+    probe: () => {
+      // Asking `solc --version` is not enough: two builds of the same version
+      // differ in whether Z3 is compiled in. Actually run a model check.
+      const { probeModelChecker } = require("../compiler/solc");
+      const { ConfigSchema } = require("../config/schema");
+      const status = probeModelChecker(ConfigSchema.parse({}));
+      if (status.ran) return { ok: true, version: `${status.engine}${status.version ? " " + status.version : ""}` };
+      return {
+        ok: false,
+        hint: `${status.reason ?? "model checker did not run"}\n     Gates 3 and 8 will be recorded as skipped, never as clean, until a solc with a Horn solver is on PATH.`,
+      };
+    },
   },
   {
     name: "slither (Docker or native)",
