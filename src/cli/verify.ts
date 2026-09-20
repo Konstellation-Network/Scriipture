@@ -421,7 +421,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       const summary = `${verdict.proven.length}/${invs.length} proven by SMTChecker` +
         (verdict.unproven.length > 0 ? `; unproven (solver gave up): ${verdict.unproven.join(", ")}` : "") +
         (verdict.violated.length > 0 ? `; VIOLATED: ${verdict.violated.join(", ")}` : "");
-      switch (proofStatus(verdict)) {
+      switch (proofStatus(verdict, invs)) {
         case "failed":
           record(c.name, { ...gateFailed("invariant-proof", summary, verdict.violated.length), engine: proofEngine });
           allResults.ok = false;
