@@ -61,10 +61,12 @@ export function generateFuzzHarness(contract: IRContract): FuzzHarness | null {
 }
 
 /**
- * A struct whose fields include an enum cannot be fuzzed safely: the ABI
- * decoder rejects an out-of-range enum before the test body runs, so there is
- * nowhere to put a `vm.assume`. Skip those methods rather than emit a harness
- * that fails for reasons that are not the contract's fault.
+ * An enum nested inside a struct field or an array element cannot be fuzzed
+ * safely: the ABI decoder rejects an out-of-range enum before the test body
+ * runs, so there is nowhere to put a `vm.assume`. (A top-level enum parameter
+ * is fine -- fuzzMethod takes it as a bounded uint8.) Skip those methods
+ * rather than emit a harness that fails for reasons that are not the
+ * contract's fault.
  */
 function isFuzzable(contract: IRContract, type: IRType, seen = new Set<string>()): boolean {
   if (type.kind === "struct") {
@@ -74,7 +76,7 @@ function isFuzzable(contract: IRContract, type: IRType, seen = new Set<string>()
     if (!decl) return false;
     return decl.fields.every((f) => f.type.kind !== "enum" && isFuzzable(contract, f.type, seen));
   }
-  if (type.kind === "array") return isFuzzable(contract, type.element, seen);
+  if (type.kind === "array") return type.element.kind !== "enum" && isFuzzable(contract, type.element, seen);
   if (type.kind === "mapping") return false;
   return true;
 }

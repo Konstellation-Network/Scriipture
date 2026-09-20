@@ -16,6 +16,8 @@ export interface TypeEnv {
   storageLocals?: Set<string>;
   /** Structs declared alongside the contract, so field access can be typed. */
   structs?: Map<string, IRStructDecl>;
+  /** Return type of each of the contract's own functions, so `const p = this.draft(id)` can be typed. */
+  fnReturnTypes?: Map<string, IRType>;
 }
 
 export function unwrapExpr(expr: IRExpression): IRExpression {
@@ -114,11 +116,20 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
     case "index":
       return elementOf(inferType(e.object, env));
     case "call":
-      // `m.get(k)` is a mapping read; everything else needs a signature we do not track.
+      // `m.get(k)` is a mapping read.
       if (e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) {
         return elementOf(inferType(e.callee.object, env));
       }
+      // `this.f(…)` returning a struct: without this, `const p = this.draft(id)` fell to the
+      // `uint256` default. Other return types stay untyped here until signatures are tracked fully.
+      if (e.callee.kind === "member" && e.callee.object.kind === "this") {
+        const ret = env.fnReturnTypes?.get(e.callee.property);
+        if (ret?.kind === "struct") return ret;
+      }
       return undefined;
+    case "object":
+      // `{ … } as Proposal`, or a literal the resolver already named from its slot.
+      return e.structName ? { kind: "struct", name: e.structName } : undefined;
     case "conditional":
       if (mixesStorageAndMemory(e, env)) return undefined;
       return inferType(e.consequent, env) ?? inferType(e.alternate, env);
@@ -265,6 +276,7 @@ export function typeEnvFor(contract: IRContract, fn: IRFunction): Scope {
   return functionScope({
     stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])),
     structs: new Map(contract.structs.map((s) => [s.name, s])),
+    fnReturnTypes: new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType])),
   }, fn);
 }
 
