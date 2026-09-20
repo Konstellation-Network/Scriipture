@@ -39,6 +39,12 @@ describe("fuzz harness with structs and enums", () => {
     expect(s).toContain("vm.assume(sRaw < 3);");
   });
 
+  it("skips a method whose enum arrives inside an array, for the same reason", () => {
+    const s = harness().solidity;
+    expect(s).not.toContain("testFuzz_SetAll");
+    expect(s).not.toContain("Status[]");
+  });
+
   it("compiles under solc alongside the contract", () => {
     const { contract } = load("tests/contracts/Registry.ts");
     const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/Registry.ts")]);
