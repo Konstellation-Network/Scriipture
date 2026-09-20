@@ -39,6 +39,12 @@ describe("fuzz harness with structs and enums", () => {
     expect(s).toContain("vm.assume(sRaw < 3);");
   });
 
+  it("skips a method whose enum arrives inside an array, for the same reason", () => {
+    const s = harness().solidity;
+    expect(s).not.toContain("testFuzz_SetAll");
+    expect(s).not.toContain("Status[]");
+  });
+
   it("compiles under solc alongside the contract", () => {
     const { contract } = load("tests/contracts/Registry.ts");
     const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/Registry.ts")]);
@@ -80,6 +86,19 @@ describe("proof verdicts", () => {
     expect(proofStatus({ proven: ["a"], unproven: ["b"], violated: [] })).toBe("passed");
     expect(proofStatus({ proven: [], unproven: ["a", "b"], violated: [] })).toBe("skipped");
     expect(proofStatus({ proven: ["a"], unproven: [], violated: ["b"] })).toBe("failed");
+  });
+
+  it("does not let the auto-ERC20 tautology vouch for the contract's own invariants", () => {
+    const spec = (name: string, origin: "decorator" | "auto-erc20") => ({ name, predicate: "", selfPredicate: "", origin });
+    const auto = spec("supplyEqualsZero", "auto-erc20");
+    // every declared invariant unproved; only `totalSupply() >= 0` came back proven
+    expect(proofStatus({ proven: ["supplyEqualsZero"], unproven: ["solvent"], violated: [] }, [spec("solvent", "decorator"), auto])).toBe("skipped");
+    // one declared invariant proven is a pass, whatever the tautology did
+    expect(proofStatus({ proven: ["solvent", "supplyEqualsZero"], unproven: ["bounded"], violated: [] }, [spec("solvent", "decorator"), spec("bounded", "decorator"), auto])).toBe("passed");
+    // a violation still fails regardless
+    expect(proofStatus({ proven: ["supplyEqualsZero"], unproven: [], violated: ["solvent"] }, [spec("solvent", "decorator"), auto])).toBe("failed");
+    // with nothing declared, the auto invariant is all there is, and its verdict stands as before
+    expect(proofStatus({ proven: ["supplyEqualsZero"], unproven: [], violated: [] }, [auto])).toBe("passed");
   });
 });
 

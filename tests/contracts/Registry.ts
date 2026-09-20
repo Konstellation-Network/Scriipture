@@ -20,6 +20,11 @@ export class Registry {
     this.status = s;
   }
 
+  /** An enum reached through an array: nowhere to bound it, so not fuzzed. */
+  setAll(ss: Status[]): void {
+    this.status = ss[0]!;
+  }
+
   put(id: bigint, it: Item): void {
     this.items.set(id, it);
   }

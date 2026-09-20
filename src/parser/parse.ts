@@ -43,17 +43,25 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
     const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics, structs: new Map(), enums: new Map() };
 
     // Structs and enums are declared at file level, next to the contract class,
-    // and may be referenced before they are declared -- so collect them first.
+    // and may be referenced before they are declared -- by the class, and by
+    // each other. So: enums and struct *names* first, struct fields second,
+    // otherwise `interface A { b: B }` ahead of `interface B` reads `b` as an
+    // opaque `custom` type instead of a struct.
+    const structNodes: Array<{ name: string; members: ts.NodeArray<ts.TypeElement>; node: ts.Node }> = [];
     sourceFile.forEachChild((node) => {
       if (ts.isEnumDeclaration(node)) {
         const en = parseEnumDecl(node, ctx);
         ctx.enums.set(en.name, en);
       } else if (ts.isInterfaceDeclaration(node)) {
-        registerStruct(node.name.text, node.members, node, ctx);
+        structNodes.push({ name: node.name.text, members: node.members, node });
       } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
-        registerStruct(node.name.text, node.type.members, node, ctx);
+        structNodes.push({ name: node.name.text, members: node.type.members, node });
       }
     });
+    for (const s of structNodes) {
+      if (isStructShaped(s.members)) ctx.structs.set(s.name, { name: s.name, fields: [], natspec: extractNatspec(s.node, ctx), loc: loc(s.node, ctx) });
+    }
+    for (const s of structNodes) registerStruct(s.name, s.members, s.node, ctx);
 
     sourceFile.forEachChild((node) => {
       if (ts.isClassDeclaration(node) && node.name) {
@@ -350,6 +358,15 @@ function parseEnumDecl(node: ts.EnumDeclaration, ctx: ParseContext): IREnumDecl 
  * cannot be lowered is reported and left unregistered, rather than emitted as
  * a half-struct that silently drops state.
  */
+/**
+ * The structural half of registerStruct's decision, answerable before any
+ * field type is parsed: at least one typed property, and nothing a struct
+ * cannot hold. Used to reserve the name so other structs can refer to it.
+ */
+function isStructShaped(members: ts.NodeArray<ts.TypeElement>): boolean {
+  return members.length > 0 && members.every((m) => ts.isPropertySignature(m) && m.type !== undefined && !m.questionToken);
+}
+
 function registerStruct(
   name: string,
   members: ts.NodeArray<ts.TypeElement>,
@@ -357,9 +374,10 @@ function registerStruct(
   ctx: ParseContext,
 ): void {
   const { decl, problems } = parseStructDecl(name, members, node, ctx);
-  if (decl.fields.length === 0) return; // not a struct: nothing to lower, and nothing to complain about
+  if (decl.fields.length === 0) { ctx.structs.delete(name); return; } // not a struct: nothing to lower, and nothing to complain about
   if (problems.length > 0) {
     for (const p of problems) ctx.diagnostics.push(p);
+    ctx.structs.delete(name);
     return;
   }
   ctx.structs.set(decl.name, decl);
@@ -745,11 +763,14 @@ function resolveStructLiterals(contract: IRContract, ctx: ParseContext): void {
   const stateTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
   const fnParams = new Map(contract.functions.map((f) => [f.name, f.params.map((p) => p.type)]));
 
+  // A literal that already names its struct (`{ … } as Proposal`) still needs
+  // its nested literals typed, whether or not the slot it flows into is typed.
   const expect = (e: IRExpression | undefined, t: IRType | undefined): void => {
-    if (!e || !t) return;
+    if (!e) return;
     const inner = e.kind === "paren" ? e.inner : e;
-    if (inner.kind !== "object" || t.kind !== "struct") return;
-    inner.structName ??= t.name;
+    if (inner.kind !== "object") return;
+    if (t?.kind === "struct") inner.structName ??= t.name;
+    if (!inner.structName) return;
     const decl = ctx.structs.get(inner.structName);
     if (!decl) return;
     for (const p of inner.properties) expect(p.value, decl.fields.find((f) => f.name === p.name)?.type);
@@ -766,6 +787,7 @@ function resolveStructLiterals(contract: IRContract, ctx: ParseContext): void {
       if (s.kind === "let") expect(s.init, s.type);
       if (s.kind === "return") expect(s.value, fn.returnType);
       walkExpressionsInStatement(s, (e) => {
+        if (e.kind === "object" && e.structName) expect(e, undefined);
         if (e.kind === "assign") {
           if (e.left.kind === "member") expect(e.right, stateVarOf(e.left));
           if (e.left.kind === "index") expect(e.right, elementOf(stateVarOf(e.left.object)));
