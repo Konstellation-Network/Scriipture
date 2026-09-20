@@ -116,7 +116,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 
 | # | Gate | Catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 18 rules |
+| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 19 rules |
 | 2 | solc | syntax and type errors |
 | 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — needs a native `solc` built with a Horn solver (`scriipture doctor` tells you whether yours is; the version number does not). Recorded as skipped, never as clean, when no solver can run |
 | 4 | Mythril | symbolic execution (opt-in via `--deep`) |

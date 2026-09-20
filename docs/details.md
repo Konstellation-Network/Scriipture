@@ -543,7 +543,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 18 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 19 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | native `solc` **built with a Horn solver** | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. See [Getting a solc that can actually run it](#smt-solver) — without one the gate is recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |

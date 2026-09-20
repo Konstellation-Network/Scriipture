@@ -11,7 +11,7 @@ import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
-import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, typeEnvFor, walkScoped } from "../mapper/infer";
+import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, mixesStorageAndMemory, typeEnvFor, walkScoped } from "../mapper/infer";
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -244,6 +244,7 @@ const RULES: Rule[] = [
   ruleConstructorIsConstructor,
   ruleNullishFallback,
   ruleDestructureShape,
+  ruleStorageAlias,
 ];
 
 /**
@@ -283,9 +284,32 @@ function ruleNullishFallback(contract: IRContract, fn: IRFunction): Diagnostic[]
           severity: "error",
           message: `\`?? fallback\` in "${fn.name}" cannot be lowered: the left side's type is ${type ? "not testable for emptiness" : "unknown"}, so the fallback would be silently dropped`,
           loc: stmt.loc ?? fn.loc,
-          fix: "use `?? 0n` (a mapping read already defaults to zero), or write the test explicitly with an if / ternary",
+          fix: "drop the fallback (a mapping read already yields the type's default), or write the test explicitly with an if / ternary",
         });
       }
+    });
+  });
+  return out;
+}
+
+/**
+ * `const p = cond ? this.items[i] : other` -- a struct, array or mapping from a
+ * ternary with one storage branch and one memory branch. Solidity has no data
+ * location that fits both: `storage` cannot hold the memory side and `memory`
+ * would copy the storage side, so a write through `p` would be lost whenever
+ * the storage branch was taken. The emitter leaves such a local untyped
+ * rather than guess, and this rule is what says so.
+ */
+function ruleStorageAlias(contract: IRContract, fn: IRFunction): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
+    if (stmt.kind !== "let" || !stmt.init || !mixesStorageAndMemory(stmt.init, scope)) return;
+    out.push({
+      rule: "storage-alias",
+      severity: "error",
+      message: `"${stmt.name}" in "${fn.name}" binds a ternary with one storage branch and one memory branch; no data location fits both, so writes through it would be lost`,
+      loc: stmt.loc ?? fn.loc,
+      fix: "bind each branch in its own if / else block, or, if it is only read, copy the storage side first (`const s: T = this.items[i]; const p = cond ? s : other`)",
     });
   });
   return out;

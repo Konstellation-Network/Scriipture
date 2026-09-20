@@ -81,6 +81,25 @@ describe("calldata-params only where calldata is legal", () => {
     expect(r.errors).toEqual([]);
   }, 60_000);
 
+  it("sees a write through a local alias of a param as a write to the param", () => {
+    // With memory the alias is a reference and the caller sees the write; with calldata it would be a copy.
+    const s = build("tests/contracts/CalldataAlias.ts");
+    expect(s).toContain("function bumpFirst(uint256[] memory values) external");
+    expect(s).toContain("function bumpRec(Rec[] memory recs) external");
+    expect(s).toContain("function bumpVia(uint256[] memory values) external");
+    // a value-typed alias is a copy under any location, and a read-only alias is fine
+    expect(s).toContain("function readFirst(uint256[] calldata values) external");
+    expect(s).toContain("function sumAlias(uint256[] calldata values) external");
+  });
+
+  it("the alias fixture compiles under solc", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-calldata-alias-"));
+    const file = path.join(dir, "CalldataAlias.sol");
+    fs.writeFileSync(file, build("tests/contracts/CalldataAlias.ts"), "utf8");
+    const r = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
+    expect(r.errors).toEqual([]);
+  }, 60_000);
+
   it("maps string .length to bytes(...).length", () => {
     expect(sol()).toContain("return bytes(s).length;");
   });

@@ -59,6 +59,15 @@ describe("?? lowering", () => {
     expect(shape[0]!.message).toContain("tuple type annotation");
   });
 
+  it("tests a CheckedAddress as the address it is emitted as", () => {
+    const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/CheckedFallback.ts")]);
+    const sol = emitProgram(program)[0]!.solidity;
+    expect(sol).toContain("return (owners[id] == address(0) ? msg.sender : owners[id]);");
+    expect(sol).toContain("return (to == address(0) ? msg.sender : to);");
+    const diags = validateProgram(program).filter((d) => d.rule === "nullish-fallback");
+    expect(diags.map((d) => d.severity)).toEqual(["info", "info"]);
+  });
+
   it("is an error when the left side has side effects, since the lowering evaluates it twice", () => {
     const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/BadLowering.ts")]);
     const diags = validateProgram(program).filter((d) => d.rule === "nullish-fallback" && d.message.includes("side effects"));
@@ -187,12 +196,21 @@ describe("block-scoped locals", () => {
     expect(solOf()).toContain("Proposal storage p = useA ? proposals[1] : proposals[2];");
   });
 
-  it("does not type a struct from a ternary that mixes storage and memory", () => {
-    // Neither binding is faithful, so the local is left untyped rather than silently copied.
+  it("reports a struct from a ternary that mixes storage and memory, and does not type it", () => {
+    // Neither binding is faithful: the validator says so and the emitter does not guess a struct.
     const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/MixedTernary.ts")]);
     const sol = emitProgram(program)[0]!.solidity;
     expect(sol).not.toContain("Proposal memory p = useA");
     expect(sol).not.toContain("Proposal storage p = useA");
+    const diags = validateProgram(program).filter((d) => d.rule === "storage-alias");
+    expect(diags).toHaveLength(1);
+    expect(diags[0]!.severity).toBe("error");
+    expect(diags[0]!.message).toContain('"p" in "vote"');
+  });
+
+  it("does not report a ternary of two storage paths or of two memory values", () => {
+    const { program } = parseContractFiles([FIXTURE_SCOPED]);
+    expect(validateProgram(program).filter((d) => d.rule === "storage-alias")).toEqual([]);
   });
 
   it("scopes a loop variable to its loop", () => {
