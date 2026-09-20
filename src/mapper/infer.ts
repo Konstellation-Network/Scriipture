@@ -1,5 +1,6 @@
 import type { IRContract, IRExpression, IRFunction, IRStatement, IRStructDecl, IRType } from "../ir/types";
 import { exprContains, walkStatements } from "../optimizer/walk";
+import { aliasedPrimitive } from "./types";
 
 /** Everything the emitter and validator know about identifier types at a given point. */
 export interface TypeEnv {
@@ -58,6 +59,19 @@ export function isStorageAccess(expr: IRExpression, env: TypeEnv): boolean {
   return storageRoot(expr, env) !== undefined;
 }
 
+/**
+ * A ternary yielding a struct, array or mapping from one storage branch and one
+ * memory branch. No local can bind it faithfully: a `storage` local cannot hold
+ * the memory side, a `memory` local would drop writes meant for the storage
+ * side. `inferType` refuses to type it and the `storage-alias` rule reports it.
+ */
+export function mixesStorageAndMemory(expr: IRExpression, env: TypeEnv): boolean {
+  const e = unwrapExpr(expr);
+  if (e.kind !== "conditional") return false;
+  const type = inferType(e.consequent, env) ?? inferType(e.alternate, env);
+  return isReferenceType(type) && isStorageAccess(e.consequent, env) !== isStorageAccess(e.alternate, env);
+}
+
 const UINT256: IRType = { kind: "primitive", name: "uint256" };
 
 /** Element type of a container: the value of a mapping, the element of an array. */
@@ -105,14 +119,9 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
         return elementOf(inferType(e.callee.object, env));
       }
       return undefined;
-    case "conditional": {
-      const type = inferType(e.consequent, env) ?? inferType(e.alternate, env);
-      // A struct or array from a ternary with one storage branch and one memory
-      // branch has no faithful binding: a `storage` local cannot hold the memory
-      // side, a `memory` local would drop writes meant for the storage side.
-      if (isReferenceType(type) && isStorageAccess(e.consequent, env) !== isStorageAccess(e.alternate, env)) return undefined;
-      return type;
-    }
+    case "conditional":
+      if (mixesStorageAndMemory(e, env)) return undefined;
+      return inferType(e.consequent, env) ?? inferType(e.alternate, env);
     case "literal":
       if (e.literalType === "boolean") return { kind: "primitive", name: "bool" };
       if (e.literalType === "string") return { kind: "primitive", name: "string" };
@@ -320,6 +329,8 @@ export function hasSideEffects(expr: IRExpression): boolean {
  */
 export function emptinessTest(type: IRType | undefined): string | undefined {
   if (!type) return undefined;
+  // `CheckedAddress` is emitted as `address`; test it as one.
+  if (type.kind === "custom") return emptinessTest(aliasedPrimitive(type.name));
   if (type.kind === "enum") return "uint8($) == 0";
   if (type.kind !== "primitive") return undefined;
   if (type.name === "bool") return "!$";

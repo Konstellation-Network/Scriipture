@@ -1,11 +1,22 @@
-import type { IRType } from "../ir/types";
+import type { IRPrimitiveName, IRType } from "../ir/types";
 
-const CUSTOM_TYPE_ALIASES: Record<string, string> = {
+const CUSTOM_TYPE_ALIASES: Record<string, IRPrimitiveName> = {
   CheckedAddress: "address",
   Address: "address",
   Bytes32: "bytes32",
   Bytes: "bytes",
 };
+
+/**
+ * The primitive a custom type name stands for (`CheckedAddress` → `address`),
+ * or undefined for a name the emitter passes through verbatim. `solidityType`
+ * already emits aliases this way; anything that reasons about a value's type
+ * -- an emptiness test for `??` -- must see the same primitive.
+ */
+export function aliasedPrimitive(name: string): IRType | undefined {
+  const primitive = CUSTOM_TYPE_ALIASES[name];
+  return primitive ? { kind: "primitive", name: primitive } : undefined;
+}
 
 export function solidityType(type: IRType, location: "storage" | "memory" | "calldata" = "storage"): string {
   switch (type.kind) {

@@ -1,7 +1,7 @@
 import type { IRContract, IRExpression, IRFunction, IRParam } from "../ir/types";
 import type { OptimizationChange } from "./passes";
 import { resolveFunctionDecorators } from "../mapper/decorators";
-import { inferType, isStorageAccess, typeEnvFor, walkScoped } from "../mapper/infer";
+import { inferType, isStorageAccess, localDeclaration, typeEnvFor, walkScoped } from "../mapper/infer";
 import { needsLocationQualifier } from "../mapper/types";
 import { walkExpressionsInStatement, walkStatements } from "./walk";
 
@@ -64,26 +64,52 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
   return changes;
 }
 
-/** Names written to in a function body: `p = …`, `p[i] = …`, `p.f++`, `delete p[i]`, `p[i].push(x)`. */
-function directlyMutated(fn: IRFunction): Set<string> {
+/**
+ * Locals that alias a reference-typed parameter: `const v = values`,
+ * `const r = recs[0]`, and chains of those. With a `memory` parameter such a
+ * local is a reference and a write through it reaches the caller's value;
+ * with `calldata` it would be a copy. So a write through an alias is a write
+ * to the parameter. Function-wide and conservative: a name that aliases a
+ * parameter anywhere counts everywhere, which can only keep `memory` where
+ * `calldata` might have been legal, never the reverse.
+ */
+function paramAliases(contract: IRContract, fn: IRFunction): Map<string, string> {
+  const params = new Set(fn.params.map((p) => p.name));
+  const aliases = new Map<string, string>();
+  walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
+    if (stmt.kind !== "let" || !stmt.init) return;
+    const root = rootIdentifier(stmt.init);
+    const param = root ? (params.has(root) ? root : aliases.get(root)) : undefined;
+    if (!param) return;
+    // A value-typed local (`const x = values[0]` of `bigint[]`) is a copy under any location.
+    const { type } = localDeclaration(stmt, scope);
+    if (type && !needsLocationQualifier(type)) return;
+    aliases.set(stmt.name, param);
+  });
+  return aliases;
+}
+
+/**
+ * Parameters written to in a function body -- `p = …`, `p[i] = …`, `p.f++`,
+ * `delete p[i]`, `p[i].push(x)` -- directly or through a local alias.
+ */
+function directlyMutated(fn: IRFunction, aliases: Map<string, string>): Set<string> {
+  const params = new Set(fn.params.map((p) => p.name));
+  const asParam = (e: IRExpression): string | undefined => {
+    const root = rootIdentifier(e);
+    return root ? (params.has(root) ? root : aliases.get(root)) : undefined;
+  };
   const out = new Set<string>();
   walkStatements(fn.body, (stmt) => {
     walkExpressionsInStatement(stmt, (e: IRExpression) => {
-      if (e.kind === "assign") {
-        const root = rootIdentifier(e.left);
-        if (root) out.add(root);
+      let written: string | undefined;
+      if (e.kind === "assign") written = asParam(e.left);
+      if (e.kind === "unary" && (e.op === "++" || e.op === "--" || e.op === "delete")) written = asParam(e.operand);
+      if (e.kind === "call" && e.callee.kind === "member" &&
+          (e.callee.property === "push" || e.callee.property === "pop" || e.callee.property === "delete")) {
+        written = asParam(e.callee.object);
       }
-      if (e.kind === "unary" && (e.op === "++" || e.op === "--" || e.op === "delete")) {
-        const root = rootIdentifier(e.operand);
-        if (root) out.add(root);
-      }
-      if (e.kind === "call" && e.callee.kind === "member") {
-        // `p.push(x)` but also `p[i].push(x)` and `p[i].j.pop()`.
-        if (e.callee.property === "push" || e.callee.property === "pop" || e.callee.property === "delete") {
-          const root = rootIdentifier(e.callee.object);
-          if (root) out.add(root);
-        }
-      }
+      if (written) out.add(written);
     });
   });
   return out;
@@ -99,12 +125,14 @@ function directlyMutated(fn: IRFunction): Set<string> {
  */
 function mutatedParams(contract: IRContract): Map<string, Set<string>> {
   const byName = new Map(contract.functions.map((f) => [f.name, f]));
-  const mutated = new Map(contract.functions.map((f) => [f.name, directlyMutated(f)]));
+  const aliases = new Map(contract.functions.map((f) => [f.name, paramAliases(contract, f)]));
+  const mutated = new Map(contract.functions.map((f) => [f.name, directlyMutated(f, aliases.get(f.name)!)]));
 
-  // Own-function calls whose arguments are rooted at a reference-typed parameter of the caller.
+  // Own-function calls whose arguments are rooted at a reference-typed parameter of the caller, or an alias of one.
   const flows: Array<{ caller: string; param: string; callee: string; index: number }> = [];
   for (const fn of contract.functions) {
     const params = new Set(fn.params.map((p) => p.name));
+    const fnAliases = aliases.get(fn.name)!;
     walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
       walkExpressionsInStatement(stmt, (e) => {
         if (e.kind !== "call") return;
@@ -113,11 +141,12 @@ function mutatedParams(contract: IRContract): Map<string, Set<string>> {
         if (!callee || !byName.has(callee)) return;
         e.args.forEach((arg, index) => {
           const root = rootIdentifier(arg);
-          if (!root || !params.has(root)) return;
+          const param = root ? (params.has(root) ? root : fnAliases.get(root)) : undefined;
+          if (!param) return;
           // A value-typed element (`values[0]` of `bigint[]`) is copied whatever the location.
           const type = inferType(arg, scope);
           if (type && !needsLocationQualifier(type)) return;
-          flows.push({ caller: fn.name, param: root, callee, index });
+          flows.push({ caller: fn.name, param, callee, index });
         });
       });
     });
