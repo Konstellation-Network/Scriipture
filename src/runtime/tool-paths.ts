@@ -72,8 +72,14 @@ function cachedBin(name: string): string | null {
   return null;
 }
 
+/**
+ * Every spawn in this file passes `env: process.env` explicitly. Node reads
+ * `process.env` at call time, but Bun 1.3.x snapshots it at startup, so a PATH
+ * set after the process began -- by a wrapper script, or by a test -- would be
+ * invisible and the tool would be reported missing.
+ */
 function whichOnPath(name: string): string | null {
-  const r = spawnSync(process.platform === "win32" ? "where" : "which", [name], { encoding: "utf8" });
+  const r = spawnSync(process.platform === "win32" ? "where" : "which", [name], { encoding: "utf8", env: process.env });
   if (r.status === 0) {
     const out = (r.stdout || "").split("\n")[0]?.trim();
     if (out && fs.existsSync(out)) return out;
@@ -82,12 +88,12 @@ function whichOnPath(name: string): string | null {
 }
 
 function dockerInstalled(): boolean {
-  const r = spawnSync("docker", ["--version"], { encoding: "utf8" });
+  const r = spawnSync("docker", ["--version"], { encoding: "utf8", env: process.env });
   return r.status === 0;
 }
 
 function dockerImagePresent(image: string): boolean {
-  const r = spawnSync("docker", ["image", "inspect", image], { encoding: "utf8" });
+  const r = spawnSync("docker", ["image", "inspect", image], { encoding: "utf8", env: process.env });
   return r.status === 0;
 }
 
@@ -101,7 +107,7 @@ async function downloadAndExtractFoundry(): Promise<void> {
   await downloadFile(asset.url, tgzPath);
 
   process.stderr.write(`[scriipture] extracting…\n`);
-  const r = spawnSync("tar", ["-xzf", tgzPath, "-C", BIN_DIR], { stdio: "inherit" });
+  const r = spawnSync("tar", ["-xzf", tgzPath, "-C", BIN_DIR], { stdio: "inherit", env: process.env });
   if (r.status !== 0) throw new Error("tar extract failed");
   fs.unlinkSync(tgzPath);
 
@@ -113,13 +119,13 @@ async function downloadAndExtractFoundry(): Promise<void> {
 }
 
 function pipxInstalled(): boolean {
-  const r = spawnSync("pipx", ["--version"], { encoding: "utf8" });
+  const r = spawnSync("pipx", ["--version"], { encoding: "utf8", env: process.env });
   return r.status === 0;
 }
 
 function tryPipxInstall(pkg: string, binName: string): string | null {
   process.stderr.write(`[scriipture] running 'pipx install ${pkg}' (one-time, ~1-2 minutes)…\n`);
-  const r = spawnSync("pipx", ["install", pkg], { encoding: "utf8" });
+  const r = spawnSync("pipx", ["install", pkg], { encoding: "utf8", env: process.env });
   if (r.status !== 0) {
     const err = (r.stderr || r.stdout || "").trim().split("\n").slice(-3).join("\n");
     process.stderr.write(`[scriipture] pipx install ${pkg} failed:\n  ${err}\n`);

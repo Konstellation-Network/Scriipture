@@ -16,13 +16,44 @@ export interface MythrilFinding {
   solLine: number;
 }
 
+/** A file Mythril was asked about but did not analyse. Not the same as a clean file. */
+export interface MythrilFailure {
+  file: string;
+  reason: string;
+}
+
 export interface MythrilResult {
   ok: boolean;
   installed: boolean;
   findings: MythrilFinding[];
   diagnostics: Diagnostic[];
+  /** Files that produced no usable analysis: a crash, a timeout with no output, unparseable output, or an error Mythril reported inside its JSON. */
+  failures: MythrilFailure[];
   raw?: unknown;
   error?: string;
+}
+
+function failureReason(proc: { status: number | null; stderr?: string }): string {
+  const stderr = (proc.stderr || "").split("\n").map((l) => l.trim()).find(Boolean);
+  return stderr ?? `mythril exited ${proc.status ?? "abnormally"} with no output`;
+}
+
+/**
+ * Mythril reports a fatal error -- solc mismatch, compile failure, unreadable
+ * file -- as *valid* JSON and exits 0: `-o jsonv2` gives
+ * `[{"issues": [], "meta": {"logs": [{"level": "error", "msg": …}]}}]` and
+ * `-o json` gives `{"success": false, "error": …}`. A parse that succeeds is
+ * therefore not evidence that the file was analysed.
+ */
+function reportedError(parsed: any): string | undefined {
+  if (parsed?.success === false) return String(parsed.error ?? "mythril reported failure");
+  const reports = Array.isArray(parsed) ? parsed : [parsed];
+  for (const report of reports) {
+    const logs: any[] = Array.isArray(report?.meta?.logs) ? report.meta.logs : [];
+    const err = logs.find((l) => String(l?.level ?? "").toLowerCase() === "error");
+    if (err) return String(err.msg ?? err.message ?? "mythril reported an error");
+  }
+  return undefined;
 }
 
 export interface MythrilOptions {
@@ -41,7 +72,7 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
   try {
     tool = await resolveTool("myth");
   } catch (e: any) {
-    return { ok: false, installed: false, findings: [], diagnostics: [], error: e.message ?? String(e) };
+    return { ok: false, installed: false, findings: [], diagnostics: [], failures: [], error: e.message ?? String(e) };
   }
 
   const ozRoot = resolveOZRoot();
@@ -49,6 +80,7 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
   const timeout = String(opts.timeout ?? 90);
 
   const findings: MythrilFinding[] = [];
+  const failures: MythrilFailure[] = [];
   const diagnostics: Diagnostic[] = [];
   let raw: unknown;
 
@@ -62,12 +94,27 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
       "-o", "jsonv2",
     ];
 
-    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, env: process.env });
     let parsed: any;
-    try { parsed = JSON.parse(proc.stdout || "[]"); } catch { continue; }
+    try {
+      parsed = JSON.parse(proc.stdout || "");
+    } catch {
+      failures.push({ file: path.basename(file), reason: failureReason(proc) });
+      continue;
+    }
+    const reported = reportedError(parsed);
+    if (reported !== undefined) {
+      failures.push({ file: path.basename(file), reason: reported.split("\n")[0]!.trim() });
+      continue;
+    }
     raw = parsed;
 
     const reports = Array.isArray(parsed) ? parsed : [parsed];
+    if (proc.status !== 0 && reports.every((r) => (r?.issues ?? []).length === 0)) {
+      // Valid JSON, nothing in it, and a non-zero exit: mythril gave up, not a clean run.
+      failures.push({ file: path.basename(file), reason: failureReason(proc) });
+      continue;
+    }
     for (const report of reports) {
       const issues = report?.issues ?? [];
       for (const iss of issues) {
@@ -106,5 +153,5 @@ export async function runMythril(solFiles: string[], sourcemaps: SourceMap[], op
     }
   }
 
-  return { ok: true, installed: true, findings, diagnostics, raw };
+  return { ok: failures.length === 0, installed: true, findings, diagnostics, failures, raw };
 }

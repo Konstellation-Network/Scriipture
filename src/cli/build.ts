@@ -5,11 +5,17 @@ import { parseContractFiles } from "../parser/parse";
 import { emitProgram } from "../emitter/emit";
 import { optimizeProgram } from "../optimizer/passes";
 import { buildSourceMap } from "../sourcemaps/emit";
+import { validateProgram } from "../validator/rules";
+import { formatDiagnostic } from "../validator/diagnostics";
 import { collectTsFiles } from "./parse";
 
 export interface BuildOptions {
   out?: string;
   noOptimize?: boolean;
+  /** Apply the storage-slot reordering from `pack-slots` (changes the storage layout). */
+  reorderStorage?: boolean;
+  /** Emit even when the validator reports errors. The output may not say what the source said. */
+  noValidate?: boolean;
 }
 
 export async function buildCommand(input: string, opts: BuildOptions): Promise<void> {
@@ -23,7 +29,29 @@ export async function buildCommand(input: string, opts: BuildOptions): Promise<v
 
   const { program, diagnostics } = parseContractFiles(files);
   for (const d of diagnostics) {
-    console.error(`${d.loc.file}:${d.loc.line}:${d.loc.column} — ${d.message}`);
+    console.error(pc.red(`${d.loc.file}:${d.loc.line}:${d.loc.column} — ${d.message}`));
+  }
+
+  // Some constructs (a `?? fallback` on an untyped value, a destructuring with
+  // no known shape) can only be emitted by guessing. Guessing produces a
+  // plausible-looking contract that is not the program that was written, so
+  // build refuses rather than writing one.
+  if (!opts.noValidate) {
+    const validation = validateProgram(program);
+    const errors = validation.filter((d) => d.severity === "error");
+    for (const d of errors) console.error(pc.red(formatDiagnostic(d)));
+    const others = validation.length - errors.length;
+    if (errors.length > 0 || diagnostics.length > 0) {
+      console.error("");
+      console.error(pc.red(`✗ ${errors.length + diagnostics.length} error(s) — nothing was written.`));
+      console.error(pc.dim("  Run `scriipture validate <input>` for the full report, or `--no-validate` to emit anyway."));
+      process.exit(1);
+    }
+    if (others > 0) {
+      console.log(pc.dim(`(${others} non-blocking diagnostic(s); run \`scriipture validate ${input}\` to see them)`));
+    }
+  } else if (diagnostics.length > 0) {
+    console.error(pc.yellow("⚠ --no-validate: emitting despite parse errors; the output may not match the source."));
   }
 
   const unoptEmitted = emitProgram(program);
@@ -45,7 +73,7 @@ export async function buildCommand(input: string, opts: BuildOptions): Promise<v
     fs.writeFileSync(path.join(unoptDir, `${c.name}.sol`), c.solidity, "utf8");
   }
 
-  const reports = optimizeProgram(program);
+  const reports = optimizeProgram(program, { reorderStorage: opts.reorderStorage });
   const optEmitted = emitProgram(program);
 
   for (const c of optEmitted) {

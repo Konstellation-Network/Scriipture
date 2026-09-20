@@ -1,16 +1,19 @@
 import type {
   IRContract,
+  IREnumDecl,
   IRErrorDecl,
   IREventDecl,
   IRFunction,
   IRParam,
   IRProgram,
   IRStateVar,
+  IRStructDecl,
 } from "../ir/types";
 import { resolveContract, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
-import { needsLocationQualifier, solidityType } from "../mapper/types";
+import { solidityType } from "../mapper/types";
+import { functionScope } from "../mapper/infer";
 
 export interface EmitOptions {
   pragma?: string;
@@ -40,7 +43,10 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   const o = { ...DEFAULTS, ...opts };
   const resolution = resolveContract(contract);
   const stateVarNames = new Set(contract.stateVars.map((v) => v.name));
-  const ctx: EmitContext = { stateVarNames };
+  const stateVarTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
+  const structs = new Map(contract.structs.map((s) => [s.name, s]));
+  const fnReturnTypes = new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType]));
+  const ctx: EmitContext = { stateVarNames, stateVarTypes, structs, fnReturnTypes };
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
@@ -57,6 +63,12 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
     ? `contract ${contract.name} is ${resolution.inheritedContracts.join(", ")} {`
     : `contract ${contract.name} {`;
   lines.push(header);
+
+  for (const en of contract.enums) lines.push(...emitEnum(en));
+  if (contract.enums.length > 0) lines.push("");
+
+  for (const st of contract.structs) lines.push(...emitStruct(st));
+  if (contract.structs.length > 0) lines.push("");
 
   for (const err of contract.errors) lines.push(...emitError(err));
   if (contract.errors.length > 0) lines.push("");
@@ -145,6 +157,23 @@ function emitHelpers(set: Set<"_validateAddr" | "_pullPayment">): string[] {
   return lines;
 }
 
+function emitEnum(en: IREnumDecl): string[] {
+  const lines: string[] = [];
+  if (en.natspec) for (const ln of en.natspec) lines.push(`    /// ${ln}`);
+  lines.push(`    enum ${en.name} { ${en.members.join(", ")} }`);
+  return lines;
+}
+
+function emitStruct(st: IRStructDecl): string[] {
+  const lines: string[] = [];
+  if (st.natspec) for (const ln of st.natspec) lines.push(`    /// ${ln}`);
+  lines.push(`    struct ${st.name} {`);
+  // Struct fields take no data location -- "storage" yields the bare type.
+  for (const f of st.fields) lines.push(`        ${solidityType(f.type)} ${f.name};`);
+  lines.push("    }");
+  return lines;
+}
+
 function emitError(err: IRErrorDecl): string[] {
   // Error parameters take no data location -- "storage" yields the bare type.
   const params = err.params.map((p) => `${solidityType(p.type)} ${p.name}`).join(", ");
@@ -207,7 +236,7 @@ function emitConstructor(
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
   lines.push(`    constructor(${paramStr})${superStr} {`);
-  lines.push(...emitStatements(fn.body, ctx, "        "));
+  lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   lines.push("    }");
   return lines;
 }
@@ -222,7 +251,7 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
   const modifiers = res.modifiers.length > 0 ? " " + res.modifiers.join(" ") : "";
 
   const isVoid = fn.returnType.kind === "primitive" && fn.returnType.name === "void";
-  const returns = isVoid ? "" : ` returns (${solidityType(fn.returnType, needsLocationQualifier(fn.returnType) ? "memory" : "memory")})`;
+  const returns = isVoid ? "" : ` returns (${solidityType(fn.returnType, "memory")})`;
 
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
@@ -236,11 +265,20 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
     }
     lines.push("        }");
   } else {
-    lines.push(...emitStatements(fn.body, ctx, "        "));
+    lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   }
 
   lines.push("    }");
   return lines;
+}
+
+/**
+ * The emit context plus this function's parameters. Locals enter the context
+ * block by block as `emitStatements` declares them, the same way `walkScoped`
+ * does for the validator.
+ */
+function withLocals(ctx: EmitContext, fn: IRFunction): EmitContext {
+  return functionScope(ctx, fn);
 }
 
 function paramSignature(p: IRParam): string {

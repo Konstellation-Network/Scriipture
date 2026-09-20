@@ -137,7 +137,7 @@ Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 
 | Gate | Tool | What it catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin`, `selfdestruct`, `delegatecall` to input, zero-address mint, integer division (15 rules) |
+| 1 | Native validator | `tx.origin`, `selfdestruct`, `delegatecall` to input, zero-address mint, integer division (18 rules) |
 | 2 | solc | syntax + type errors |
 | 3 | SMTChecker | overflow / underflow / division-by-zero / assertion violations (Z3-backed proofs) |
 | 4 | Mythril | symbolic execution — opt-in via `--deep` |
@@ -145,7 +145,7 @@ Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 | 6 | Pattern library | only known-safe OpenZeppelin v5 bases & forge-std imports allowed |
 | 7 | Auto-generated fuzz | 1000 random inputs per public method, forge-powered |
 | 8 | Invariant tests | `@invariant` decorators → forge invariant tests across 128k random state transitions |
-| 9 | Attestation bundle | reproducible-build manifest signed against every tool version |
+| 9 | Attestation bundle | reproducible-build manifest recording every tool version, every gate's status, and the deployment it cleared |
 
 ---
 

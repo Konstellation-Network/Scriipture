@@ -38,9 +38,20 @@ const CHECKS: Check[] = [
     },
   },
   {
-    name: "solc (native, for Slither)",
+    name: "SMTChecker (gates 3 and 8) — needs a solc built with a Horn solver",
     required: false,
-    probe: () => probeCmd("solc", "--version", "`brew install solidity`  (only needed if you use `scriipture audit`)"),
+    probe: () => {
+      // Asking `solc --version` is not enough: two builds of the same version
+      // differ in whether Z3 is compiled in. Actually run a model check.
+      const { probeModelChecker } = require("../compiler/solc");
+      const { ConfigSchema } = require("../config/schema");
+      const status = probeModelChecker(ConfigSchema.parse({}));
+      if (status.ran) return { ok: true, version: `${status.engine}${status.version ? " " + status.version : ""}` };
+      return {
+        ok: false,
+        hint: `${status.reason ?? "model checker did not run"}\n     Gates 3 and 8 will be recorded as skipped, never as clean, until a solc with a Horn solver is on PATH.`,
+      };
+    },
   },
   {
     name: "slither (Docker or native)",
@@ -135,7 +146,7 @@ export async function doctorCommand(opts: DoctorOptions = {}): Promise<void> {
 }
 
 function probeCmd(cmd: string, flag: string, hint: string): { ok: boolean; version?: string; hint?: string } {
-  const r = spawnSync(cmd, [flag], { encoding: "utf8" });
+  const r = spawnSync(cmd, [flag], { encoding: "utf8", env: process.env });
   if (r.status !== 0) return { ok: false, hint };
   const v = ((r.stdout || r.stderr || "").split("\n")[0] ?? "").trim();
   return { ok: true, version: v };

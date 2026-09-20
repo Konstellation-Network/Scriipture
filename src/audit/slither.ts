@@ -14,13 +14,27 @@ export interface SlitherFinding {
   solLine: number;
 }
 
+/** A file Slither was asked about but did not analyse. Not the same as a clean file. */
+export interface SlitherFailure {
+  file: string;
+  reason: string;
+}
+
 export interface SlitherResult {
   ok: boolean;
   installed: boolean;
   findings: SlitherFinding[];
   diagnostics: Diagnostic[];
+  /** Files that produced no usable analysis: a crash, a solc failure, unparseable output. */
+  failures: SlitherFailure[];
   raw?: unknown;
   error?: string;
+}
+
+function failureReason(proc: { status: number | null; stderr?: string }): string {
+  const stderr = (proc.stderr || "").split("\n").map((l) => l.trim()).find(Boolean);
+  if (stderr) return stderr;
+  return `slither exited ${proc.status ?? "abnormally"} with no output — it needs a native solc it can run; check \`solc --version\``;
 }
 
 export function slitherInstalled(): boolean {
@@ -32,7 +46,7 @@ export async function runSlither(solFiles: string[], sourcemaps: SourceMap[]): P
   try {
     tool = await resolveTool("slither");
   } catch (e: any) {
-    return { ok: false, installed: false, findings: [], diagnostics: [], error: e.message ?? String(e) };
+    return { ok: false, installed: false, findings: [], diagnostics: [], failures: [], error: e.message ?? String(e) };
   }
 
   const ozRoot = resolveOZRoot();
@@ -40,18 +54,26 @@ export async function runSlither(solFiles: string[], sourcemaps: SourceMap[]): P
 
   const findings: SlitherFinding[] = [];
   const diagnostics: Diagnostic[] = [];
+  const failures: SlitherFailure[] = [];
   let raw: unknown;
 
   for (const file of solFiles) {
     const args = [...tool.argPrefix, file, "--json", "-"];
     if (remaps) args.push("--solc-remaps", remaps);
     args.push("--exclude-informational", "--exclude-low");
-    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+    const proc = spawnSync(tool.cmd, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, env: process.env });
 
     let parsed: any;
     try {
-      parsed = JSON.parse(proc.stdout || "{}");
+      parsed = JSON.parse(proc.stdout || "");
     } catch {
+      // No JSON at all: slither crashed, or solc under it failed. Reporting
+      // "no findings" for this file would be indistinguishable from a clean one.
+      failures.push({ file: path.basename(file), reason: failureReason(proc) });
+      continue;
+    }
+    if (parsed?.success === false) {
+      failures.push({ file: path.basename(file), reason: String(parsed.error ?? "slither reported failure").split("\n")[0]!.trim() });
       continue;
     }
     raw = parsed;
@@ -88,5 +110,5 @@ export async function runSlither(solFiles: string[], sourcemaps: SourceMap[]): P
     }
   }
 
-  return { ok: true, installed: true, findings, diagnostics, raw };
+  return { ok: failures.length === 0, installed: true, findings, diagnostics, failures, raw };
 }

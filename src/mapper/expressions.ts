@@ -1,4 +1,5 @@
 import type { IRExpression } from "../ir/types";
+import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "./infer";
 
 const BINARY_OP_MAP: Record<string, string> = {
   "===": "==",
@@ -30,7 +31,7 @@ const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
   tx: true,
 };
 
-export interface EmitContext {
+export interface EmitContext extends TypeEnv {
   stateVarNames: Set<string>;
 }
 
@@ -65,19 +66,41 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
     case "unary": {
       const needsParens = expr.operand.kind === "binary" || expr.operand.kind === "conditional" || expr.operand.kind === "assign";
       const inner = needsParens ? `(${emit(expr.operand, ctx)})` : emit(expr.operand, ctx);
-      return expr.prefix ? `${expr.op}${inner}` : `${inner}${expr.op}`;
+      // `delete` is a word, not a symbol: `deletex` is not Solidity.
+      const sep = /^[a-z]+$/.test(expr.op) ? " " : "";
+      return expr.prefix ? `${expr.op}${sep}${inner}` : `${inner}${sep}${expr.op}`;
     }
     case "conditional":
       return `${emit(expr.test, ctx)} ? ${emit(expr.consequent, ctx)} : ${emit(expr.alternate, ctx)}`;
     case "nullish":
-      return emit(expr.left, ctx);
+      return emitNullish(expr, ctx);
     case "assign":
       return `${emit(expr.left, ctx)} ${expr.op} ${emit(expr.right, ctx)}`;
     case "templateString":
       return emitTemplate(expr, ctx);
+    case "object": {
+      const fields = expr.properties.map((p) => `${p.name}: ${emit(p.value, ctx)}`).join(", ");
+      return `${expr.structName ?? ""}({${fields}})`;
+    }
     case "raw":
       return expr.text;
   }
+}
+
+/**
+ * `a ?? b`. A mapping read never yields "undefined" in Solidity, it yields the
+ * type's default, so `?? 0n` (or `?? false`, `?? ""`, `?? address(0)`) is
+ * exactly `a`. Any other fallback has to become an explicit test, or the
+ * program silently changes meaning. Types the emitter cannot test for
+ * emptiness fall back to `a`; the `nullish-fallback` validator rule reports those.
+ */
+function emitNullish(expr: Extract<IRExpression, { kind: "nullish" }>, ctx: EmitContext): string {
+  const left = emit(expr.left, ctx);
+  if (isZeroLiteral(expr.right)) return left;
+  const test = emptinessTest(inferType(expr.left, ctx));
+  if (!test) return left;
+  const leftAtom = isAtomic(expr.left) ? left : `(${left})`;
+  return `(${test.replace("$", leftAtom)} ? ${emit(expr.right, ctx)} : ${leftAtom})`;
 }
 
 function isAtomic(expr: IRExpression): boolean {
@@ -90,6 +113,7 @@ function isAtomic(expr: IRExpression): boolean {
     case "index":
     case "call":
     case "new":
+    case "object":
       return true;
     case "paren":
       return isAtomic(expr.inner);
@@ -108,6 +132,11 @@ function emitLiteral(expr: Extract<IRExpression, { kind: "literal" }>): string {
 }
 
 function emitMember(expr: Extract<IRExpression, { kind: "member" }>, ctx: EmitContext): string {
+  // `s.length` is valid TS for a string but not Solidity, which needs bytes(s).length.
+  if (expr.property === "length") {
+    const t = inferType(expr.object, ctx);
+    if (t?.kind === "primitive" && t.name === "string") return `bytes(${emit(expr.object, ctx)}).length`;
+  }
   if (expr.object.kind === "this" && ctx.stateVarNames.has(expr.property)) {
     return expr.property;
   }

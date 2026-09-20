@@ -51,6 +51,33 @@ export async function deploy({ artifact, network, config, args = [], privateKeyO
   };
 }
 
+/**
+ * `eth_getCode` at `address`. Used to record what is actually on chain in the
+ * attestation; returns undefined when the node cannot be reached rather than
+ * failing a deploy that already succeeded. An empty answer (`0x`, which a
+ * load-balanced endpoint lagging the receipt will give) is also undefined:
+ * it is not the contract's code and must not be hashed as if it were.
+ */
+export async function fetchDeployedCode(
+  network: string,
+  config: Config,
+  address: Hex,
+  rpcOverride?: string,
+): Promise<Hex | undefined> {
+  try {
+    const netConf = config.networks[network] ?? defaultNetworkFor(network);
+    const chain = resolveChain(network, config.networks) as any;
+    const rpcUrl = rpcOverride ?? netConf.rpcUrl ?? chain?.rpcUrls?.default?.http?.[0];
+    if (!rpcUrl) return undefined;
+    const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+    // Raw request rather than getCode/getBytecode so this does not track viem renames.
+    const code = (await publicClient.request({ method: "eth_getCode", params: [address, "latest"] } as any)) as Hex | undefined;
+    return code && code !== "0x" ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function defaultNetworkFor(name: string): NetworkConfig {
   if (name === "anvil") {
     return { rpcUrl: "http://127.0.0.1:8545", chainId: 31337, privateKeyEnv: "ANVIL_PRIVATE_KEY" };
