@@ -153,10 +153,18 @@ export function classifyInvariantProofs(
  * What a proof attempt should be recorded as. `passed` has to mean "the solver
  * proved at least one of these"; a run where it settled nothing is a hole in
  * the attestation, not a pass, because a reader takes `passed` for `proved`.
+ *
+ * The auto-ERC20 invariant (`totalSupply() >= 0`) is a tautology the solver
+ * proves unconditionally, so when the contract declares invariants of its
+ * own it cannot be the one that earns `passed`: with it counted, every
+ * ERC20-shaped contract whose real invariants all went unproved would still
+ * read "1/N proven". Only when nothing is declared does it stand on its own.
  */
-export function proofStatus(verdict: InvariantProofResult): "failed" | "skipped" | "passed" {
+export function proofStatus(verdict: InvariantProofResult, invariants: InvariantSpec[] = []): "failed" | "skipped" | "passed" {
   if (verdict.violated.length > 0) return "failed";
-  if (verdict.proven.length === 0) return "skipped";
+  const declared = new Set(invariants.filter((i) => i.origin === "decorator").map((i) => i.name));
+  const counted = declared.size > 0 ? verdict.proven.filter((n) => declared.has(n)) : verdict.proven;
+  if (counted.length === 0) return "skipped";
   return "passed";
 }
 

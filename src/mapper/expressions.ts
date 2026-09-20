@@ -34,6 +34,8 @@ export interface EmitContext {
   stateVarNames: Set<string>;
   /** Declared type of each state variable; lets locals bound to storage infer their type and location. */
   stateVarTypes?: Map<string, IRType>;
+  /** Return type of each of the contract's own functions; lets a local bound to `this.f(…)` infer its type. */
+  fnReturnTypes?: Map<string, IRType>;
 }
 
 export function emitExpression(expr: IRExpression, ctx: EmitContext): string {

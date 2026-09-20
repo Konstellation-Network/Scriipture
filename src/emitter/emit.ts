@@ -43,7 +43,8 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   const resolution = resolveContract(contract);
   const stateVarNames = new Set(contract.stateVars.map((v) => v.name));
   const stateVarTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
-  const ctx: EmitContext = { stateVarNames, stateVarTypes };
+  const fnReturnTypes = new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType]));
+  const ctx: EmitContext = { stateVarNames, stateVarTypes, fnReturnTypes };
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
