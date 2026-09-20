@@ -69,6 +69,13 @@ export type IRStatement =
   | { kind: "revert"; errorName: string; args: IRExpression[]; loc?: SourceLocation }
   | { kind: "emit"; eventName: string; args: IRExpression[]; loc?: SourceLocation }
   | { kind: "let"; name: string; type?: IRType; init?: IRExpression; isConst: boolean; loc?: SourceLocation }
+  /**
+   * `const [ok, data] = addr.call("")` → `(bool ok, bytes memory data) = addr.call("");`
+   * `names[i]` is undefined for an omitted slot (`const [ok,] = …` → `(bool ok, ) = …`).
+   * `types` comes from a tuple annotation; without one the emitter knows the
+   * return shape of low-level calls and nothing else.
+   */
+  | { kind: "destructure"; names: Array<string | undefined>; types?: IRType[]; init: IRExpression; isConst: boolean; loc?: SourceLocation }
   | { kind: "throw"; argument: IRExpression; loc?: SourceLocation }
   | { kind: "raw"; text: string; loc?: SourceLocation };
 

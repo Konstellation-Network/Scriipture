@@ -309,17 +309,27 @@ function parseParam(param: ts.ParameterDeclaration, ctx: ParseContext): IRParam 
   return { name, type };
 }
 
+/**
+ * `public` and `private` are reserved words in TypeScript, so the package
+ * exports them as `public_` / `private_`. The rest of the pipeline knows the
+ * Solidity spelling only; without this a `@private_` helper was silently
+ * emitted `public`.
+ */
+const DECORATOR_ALIASES: Record<string, string> = { public_: "public", private_: "private" };
+
 function parseDecorators(node: ts.HasDecorators, ctx: ParseContext): IRDecorator[] {
   if (!ts.canHaveDecorators(node)) return [];
   const decs = ts.getDecorators(node) ?? [];
   return decs.map((d) => {
     if (ts.isCallExpression(d.expression)) {
+      const name = d.expression.expression.getText(ctx.sourceFile);
       return {
-        name: d.expression.expression.getText(ctx.sourceFile),
+        name: DECORATOR_ALIASES[name] ?? name,
         args: d.expression.arguments.map((a) => parseExpression(a, ctx)),
       };
     }
-    return { name: d.expression.getText(ctx.sourceFile), args: [] };
+    const name = d.expression.getText(ctx.sourceFile);
+    return { name: DECORATOR_ALIASES[name] ?? name, args: [] };
   });
 }
 
@@ -555,6 +565,41 @@ function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
   }
   if (ts.isVariableStatement(stmt)) {
     const first = stmt.declarationList.declarations[0];
+    if (first && ts.isArrayBindingPattern(first.name)) {
+      if (!first.initializer) {
+        ctx.diagnostics.push({ message: "destructuring declaration needs an initializer", loc: l });
+        return { kind: "raw", text: stmt.getText(ctx.sourceFile), loc: l };
+      }
+      const names: Array<string | undefined> = [];
+      for (const el of first.name.elements) {
+        if (!ts.isBindingElement(el)) { names.push(undefined); continue; } // `const [, b] = ...`
+        if (el.dotDotDotToken) {
+          ctx.diagnostics.push({ message: "rest element in a destructuring declaration is not supported; Solidity tuple assignment has a fixed arity, so name each component", loc: loc(el, ctx) });
+          names.push(undefined);
+          continue;
+        }
+        if (el.initializer) {
+          ctx.diagnostics.push({ message: `default value for "${el.name.getText(ctx.sourceFile)}" in a destructuring declaration is not supported; Solidity tuple assignment has no defaults`, loc: loc(el, ctx) });
+        }
+        if (!ts.isIdentifier(el.name)) {
+          ctx.diagnostics.push({ message: "nested destructuring pattern is not supported; destructure one level and index the parts separately", loc: loc(el, ctx) });
+          names.push(undefined);
+          continue;
+        }
+        names.push(el.name.text);
+      }
+      const types = first.type && ts.isTupleTypeNode(first.type)
+        ? first.type.elements.map((t) => parseType(ts.isNamedTupleMember(t) ? t.type : t, ctx))
+        : undefined;
+      return {
+        kind: "destructure",
+        names,
+        types,
+        init: parseExpression(first.initializer, ctx),
+        isConst: (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0,
+        loc: l,
+      };
+    }
     if (first) {
       return {
         kind: "let",
@@ -658,6 +703,10 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
       return { kind: "assign", op: opText, left, right };
     }
     return { kind: "binary", op: opText, left, right };
+  }
+  if (ts.isDeleteExpression(expr)) {
+    // `delete xs[0]` is Solidity's own `delete`, not a TS property removal.
+    return { kind: "unary", op: "delete", operand: parseExpression(expr.expression, ctx), prefix: true };
   }
   if (ts.isPrefixUnaryExpression(expr)) {
     return { kind: "unary", op: ts.tokenToString(expr.operator) ?? "", operand: parseExpression(expr.operand, ctx), prefix: true };

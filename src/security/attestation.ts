@@ -68,11 +68,47 @@ export function unjustifiedSkippedGates<T extends GateResult>(gates: T[]): T[] {
   return gates.filter((g) => g.status === "skipped" && !g.optIn && !g.justification);
 }
 
+export interface DeploymentRecord {
+  network: string;
+  address: string;
+  txHash: string;
+  from?: string;
+  deployedAt: string;
+  /**
+   * sha256 of the `deployedBytecode` in the artifact that was actually sent.
+   * Must equal `hashes.deployedBytecode`, or the bundle would claim the audited
+   * source is at an address holding something else.
+   */
+  artifactDeployedBytecode: string;
+  /** sha256 of `eth_getCode(address)` once the tx was mined, when it could be read. */
+  onchainDeployedBytecode?: string;
+  /**
+   * Whether on-chain code equals the artifact's deployed bytecode. `false` is
+   * normal and not an error when the contract has immutables or linked
+   * libraries, since those are substituted at construction time.
+   */
+  onchainMatchesArtifact?: boolean;
+}
+
+export class DeploymentBytecodeMismatch extends Error {
+  constructor(readonly expected: string | undefined, readonly actual: string) {
+    super(
+      expected
+        ? `the artifact's deployed bytecode (sha256 ${actual.slice(0, 16)}…) is not the bytecode the gates verified (sha256 ${expected.slice(0, 16)}…). ` +
+          "Re-run verify against the sources you are deploying; an attestation must not name an address it did not check."
+        : "this attestation carries no deployed-bytecode hash, so a deployment cannot be tied to verified bytecode.",
+    );
+    this.name = "DeploymentBytecodeMismatch";
+  }
+}
+
 export interface AttestationBundle {
   schemaVersion: 2;
   contract: string;
   network?: string;
   address?: string;
+  /** Filled in by `secure-deploy` after the deploy transaction is mined. */
+  deployment?: DeploymentRecord;
   hashes: {
     tsSource: string;
     solSource: string;
@@ -131,6 +167,41 @@ export function writeAttestation(outPath: string, bundle: AttestationBundle): st
   const json = JSON.stringify(bundle, null, 2);
   fs.writeFileSync(outPath, json, "utf8");
   return sha256(json);
+}
+
+/**
+ * Record where a verified contract actually went. The bundle is written by
+ * `verify` before the deploy exists; `secure-deploy` calls this afterwards so
+ * the attestation ties the gate results to a network and address.
+ *
+ * Throws `DeploymentBytecodeMismatch` unless the bytecode that was deployed is
+ * the bytecode the gates hashed. Without that check the bundle would assert
+ * that audited source lives at an address whose code nobody compared -- which
+ * a stale `out/artifacts/` file alone is enough to make false.
+ *
+ * Returns the new fingerprint of the rewritten file.
+ */
+export function stampDeployment(attPath: string, deployment: DeploymentRecord): string {
+  const bundle = assertVerifiedBytecode(attPath, deployment.artifactDeployedBytecode);
+  bundle.network = deployment.network;
+  bundle.address = deployment.address;
+  bundle.deployment = deployment;
+  return writeAttestation(attPath, bundle);
+}
+
+/**
+ * Read the bundle and throw `DeploymentBytecodeMismatch` unless
+ * `artifactDeployedBytecode` (sha256 of the artifact about to be deployed) is
+ * the hash the gates recorded. `secure-deploy` runs this before sending the
+ * transaction, so a stale or substituted artifact is refused rather than put on
+ * chain and then reported; `stampDeployment` runs it again afterwards.
+ */
+export function assertVerifiedBytecode(attPath: string, artifactDeployedBytecode: string): AttestationBundle {
+  const bundle = JSON.parse(fs.readFileSync(attPath, "utf8")) as AttestationBundle;
+  if (!bundle.hashes.deployedBytecode || bundle.hashes.deployedBytecode !== artifactDeployedBytecode) {
+    throw new DeploymentBytecodeMismatch(bundle.hashes.deployedBytecode, artifactDeployedBytecode);
+  }
+  return bundle;
 }
 
 export function attestationFingerprint(bundle: AttestationBundle): string {

@@ -13,6 +13,11 @@ export function walkStatementArrays(stmts: IRStatement[], visit: (arr: IRStateme
   }
 }
 
+/**
+ * Pre-order walk of every statement, including a `for` initializer, which is
+ * a statement of its own (`walkExpressionsInStatement` on the `for` covers
+ * only its test and update, so nothing is visited twice).
+ */
 export function walkStatements(stmts: IRStatement[], visit: (s: IRStatement) => void): void {
   for (const s of stmts) {
     visit(s);
@@ -20,6 +25,7 @@ export function walkStatements(stmts: IRStatement[], visit: (s: IRStatement) => 
       walkStatements(s.then, visit);
       if (s.else) walkStatements(s.else, visit);
     }
+    if (s.kind === "for" && s.init) walkStatements([s.init], visit);
     if (s.kind === "for" || s.kind === "while" || s.kind === "block" || s.kind === "unchecked") {
       walkStatements(s.body, visit);
     }
@@ -50,10 +56,12 @@ export function walkExpressionsInStatement(stmt: IRStatement, visit: (e: IRExpre
   if (stmt.kind === "if") walkExpr(stmt.test, visit);
   if (stmt.kind === "while") walkExpr(stmt.test, visit);
   if (stmt.kind === "for") {
+    // `init` is visited as its own statement by walkStatements.
     if (stmt.test) walkExpr(stmt.test, visit);
     if (stmt.update) walkExpr(stmt.update, visit);
   }
   if (stmt.kind === "let" && stmt.init) walkExpr(stmt.init, visit);
+  if (stmt.kind === "destructure") walkExpr(stmt.init, visit);
   if (stmt.kind === "revert" || stmt.kind === "emit") for (const a of stmt.args) walkExpr(a, visit);
   if (stmt.kind === "throw") walkExpr(stmt.argument, visit);
 }

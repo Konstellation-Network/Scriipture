@@ -50,3 +50,69 @@ describe("attestation — gate status", () => {
     expect(o.noSmt).toBeFalsy();
   });
 });
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DeploymentBytecodeMismatch, assertVerifiedBytecode, stampDeployment, writeAttestation, type AttestationBundle } from "../src/security/attestation";
+
+describe("attestation — deployment stamp", () => {
+  const bundleFor = (deployedBytecode?: string): AttestationBundle => ({
+    schemaVersion: 2, contract: "X",
+    hashes: { tsSource: "a", solSource: "b", bytecode: "c", deployedBytecode },
+    tools: [], gates: [gatePassed("solc-compile")], optimizations: [], diagnostics: [],
+    generatedAt: "t", generatedBy: "scriipture@test",
+  });
+  const write = (bundle: AttestationBundle) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-att-"));
+    const p = path.join(dir, "X.attestation.json");
+    return { p, fingerprint: writeAttestation(p, bundle) };
+  };
+
+  it("records network, address, tx and both bytecode hashes, and changes the fingerprint", () => {
+    const { p, fingerprint: before } = write(bundleFor("verified-hash"));
+    const after = stampDeployment(p, {
+      network: "base-sepolia", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
+      artifactDeployedBytecode: "verified-hash",
+      onchainDeployedBytecode: "onchain-hash",
+      onchainMatchesArtifact: false,
+    });
+    expect(after).not.toBe(before);
+    const stored = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(stored.network).toBe("base-sepolia");
+    expect(stored.address).toBe("0xabc");
+    expect(stored.deployment.artifactDeployedBytecode).toBe("verified-hash");
+    expect(stored.deployment.onchainDeployedBytecode).toBe("onchain-hash");
+    expect(stored.deployment.onchainMatchesArtifact).toBe(false);
+    expect(stored.gates).toHaveLength(1); // nothing else touched
+  });
+
+  it("refuses to stamp bytecode the gates never saw, and leaves the bundle untouched", () => {
+    const { p } = write(bundleFor("verified-hash"));
+    expect(() => stampDeployment(p, {
+      network: "base", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
+      artifactDeployedBytecode: "some-other-contract",
+    })).toThrow(DeploymentBytecodeMismatch);
+    const stored = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(stored.address).toBeUndefined();
+    expect(stored.deployment).toBeUndefined();
+  });
+
+  it("refuses when the attestation carries no deployed-bytecode hash at all", () => {
+    const { p } = write(bundleFor(undefined));
+    expect(() => stampDeployment(p, {
+      network: "base", address: "0xabc", txHash: "0xdef", deployedAt: "t2",
+      artifactDeployedBytecode: "anything",
+    })).toThrow(/no deployed-bytecode hash/);
+  });
+
+  it("can run the bytecode comparison on its own, before anything is sent", () => {
+    // secure-deploy calls this with the hash of the artifact it is about to
+    // deploy; a mismatch must be caught here, not after the transaction is mined.
+    const { p } = write(bundleFor("verified-hash"));
+    expect(assertVerifiedBytecode(p, "verified-hash").contract).toBe("X");
+    expect(() => assertVerifiedBytecode(p, "some-other-contract")).toThrow(DeploymentBytecodeMismatch);
+    const stored = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(stored.deployment).toBeUndefined();
+  });
+});

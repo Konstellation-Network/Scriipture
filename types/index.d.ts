@@ -129,6 +129,14 @@ declare module "scriipture" {
   export function nonReentrant(...args: any[]): any;
   export function whenNotPaused(...args: any[]): any;
   export function assembly(...args: any[]): any;
+  /**
+   * Visibility. Without one a function is `public`. `@external` also lets the optimizer pass reference-type parameters in calldata.
+   * `public` and `private` are reserved words in TypeScript, so those two carry a trailing underscore; they emit as `public` / `private`.
+   */
+  export function external(...args: any[]): any;
+  export function public_(...args: any[]): any;
+  export function internal(...args: any[]): any;
+  export function private_(...args: any[]): any;
   export function solidity(strings: TemplateStringsArray, ...values: any[]): any;
   export function yul(strings: TemplateStringsArray, ...values: any[]): any;
 

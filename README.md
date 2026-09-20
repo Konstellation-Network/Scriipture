@@ -116,7 +116,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 
 | # | Gate | Catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 16 rules |
+| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 19 rules |
 | 2 | solc | syntax and type errors |
 | 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — needs a native `solc` built with a Horn solver (`scriipture doctor` tells you whether yours is; the version number does not). Recorded as skipped, never as clean, when no solver can run |
 | 4 | Mythril | symbolic execution (opt-in via `--deep`) |
@@ -124,7 +124,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 | 6 | Pattern library | only known-safe OpenZeppelin v5 and forge-std imports allowed |
 | 7 | Fuzz harnesses | auto-generated, 1000 random inputs per public method |
 | 8 | Invariant tests | `@invariant` decorators → forge invariant fuzzing (evidence) **and** an SMTChecker proof attempt per invariant (proven / unproven / violated in the attestation) |
-| 9 | Attestation | reproducible-build manifest pinned to every tool version |
+| 9 | Attestation | reproducible-build manifest recording every tool version and every gate's real status; `secure-deploy` stamps the network, address and tx onto it after deploy |
 
 Skip individual gates while iterating with `--skip fuzz,invariants`.
 
@@ -157,7 +157,7 @@ Deployed contracts auto-verify on the matching Etherscan-family explorer when an
 | `doctor [--fix]` | Check the environment; `--fix` installs what's missing |
 | `init [dir]` | Scaffold a project — contracts, config, tsconfig, scripts |
 | `build <input>` | Transpile TypeScript → Solidity (optimizer on by default) |
-| `validate <input>` | Static checks, 16 native rules |
+| `validate <input>` | Static checks, 18 native rules |
 | `verify <input>` | The full 9-gate pipeline |
 | `compile <input>` | solc → ABI + bytecode |
 | `deploy <Contract> -n <net>` | Deploy via browser wallet, auto-verify source |

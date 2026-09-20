@@ -52,8 +52,9 @@ program
   .option("-o, --out <dir>", "output directory", "out/sol")
   .option("--no-optimize", "skip optimizer passes")
   .option("--reorder-storage", "let pack-slots reorder state variables to save slots (rewrites the storage layout; never use with upgradeable proxies)")
-  .action(async (input: string, opts: { out: string; optimize: boolean; reorderStorage?: boolean }) => {
-    await buildCommand(input, { out: opts.out, noOptimize: !opts.optimize, reorderStorage: opts.reorderStorage });
+  .option("--no-validate", "emit even when the validator reports errors (the output may not match the source)")
+  .action(async (input: string, opts: { out: string; optimize: boolean; reorderStorage?: boolean; validate: boolean }) => {
+    await buildCommand(input, { out: opts.out, noOptimize: !opts.optimize, reorderStorage: opts.reorderStorage, noValidate: !opts.validate });
   });
 
 program
@@ -229,6 +230,9 @@ program
   .option("--no-invariants", "skip invariant tests")
   .option("--no-patterns", "skip pattern library check")
   .option("--deep", "also run Mythril symbolic execution (Gate 4, ~90s/contract)")
+  .option("--skip <gates>", "comma-separated gates to skip: fuzz, smt, slither, mythril, invariants, patterns, fuzz-run", "")
+  .option("--fuzz-runs <n>", "forge fuzz iterations per method (default 1000)", (v) => parseInt(v, 10))
+  .option("--mythril-timeout <s>", "Mythril execution timeout per contract in seconds", (v) => parseInt(v, 10))
   .option("--allow-skipped-gates <justification>", "deploy even though gates were skipped; the reason is recorded on every skipped gate in the attestation")
   .action(async (input: string, opts: any) => {
     await secureDeployCommand(input, {
@@ -236,6 +240,8 @@ program
       noFuzz: !opts.fuzz, noSmt: !opts.smt, noSlither: !opts.slither,
       noInvariants: !opts.invariants, noPatterns: !opts.patterns,
       deep: opts.deep, allowSkippedGates: opts.allowSkippedGates,
+      skip: opts.skip ? String(opts.skip).split(",").map((s: string) => s.trim()).filter(Boolean) : [],
+      fuzzRuns: opts.fuzzRuns, mythrilTimeout: opts.mythrilTimeout,
     });
   });
 

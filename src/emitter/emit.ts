@@ -12,7 +12,8 @@ import type {
 import { resolveContract, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
-import { needsLocationQualifier, solidityType } from "../mapper/types";
+import { solidityType } from "../mapper/types";
+import { functionScope } from "../mapper/infer";
 
 export interface EmitOptions {
   pragma?: string;
@@ -43,8 +44,9 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   const resolution = resolveContract(contract);
   const stateVarNames = new Set(contract.stateVars.map((v) => v.name));
   const stateVarTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
+  const structs = new Map(contract.structs.map((s) => [s.name, s]));
   const fnReturnTypes = new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType]));
-  const ctx: EmitContext = { stateVarNames, stateVarTypes, fnReturnTypes };
+  const ctx: EmitContext = { stateVarNames, stateVarTypes, structs, fnReturnTypes };
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
@@ -234,7 +236,7 @@ function emitConstructor(
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
   lines.push(`    constructor(${paramStr})${superStr} {`);
-  lines.push(...emitStatements(fn.body, ctx, "        "));
+  lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   lines.push("    }");
   return lines;
 }
@@ -249,7 +251,7 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
   const modifiers = res.modifiers.length > 0 ? " " + res.modifiers.join(" ") : "";
 
   const isVoid = fn.returnType.kind === "primitive" && fn.returnType.name === "void";
-  const returns = isVoid ? "" : ` returns (${solidityType(fn.returnType, needsLocationQualifier(fn.returnType) ? "memory" : "memory")})`;
+  const returns = isVoid ? "" : ` returns (${solidityType(fn.returnType, "memory")})`;
 
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
@@ -263,11 +265,20 @@ function emitFunction(fn: IRFunction, resolution: ContractResolution, ctx: EmitC
     }
     lines.push("        }");
   } else {
-    lines.push(...emitStatements(fn.body, ctx, "        "));
+    lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   }
 
   lines.push("    }");
   return lines;
+}
+
+/**
+ * The emit context plus this function's parameters. Locals enter the context
+ * block by block as `emitStatements` declares them, the same way `walkScoped`
+ * does for the validator.
+ */
+function withLocals(ctx: EmitContext, fn: IRFunction): EmitContext {
+  return functionScope(ctx, fn);
 }
 
 function paramSignature(p: IRParam): string {

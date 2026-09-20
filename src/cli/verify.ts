@@ -9,7 +9,7 @@ import { buildSourceMap } from "../sourcemaps/emit";
 import { validateProgram } from "../validator/rules";
 import { parseDiagnosticsAsErrors } from "../validator/diagnostics";
 import { loadConfig } from "../config/load";
-import { compileSolidity } from "../compiler/solc";
+import { compileSolidity, resolveOZRoot } from "../compiler/solc";
 import { runSlither, slitherInstalled } from "../audit/slither";
 import { runMythril, mythrilInstalled } from "../audit/mythril";
 import { resolveTool } from "../runtime/tool-paths";
@@ -79,6 +79,11 @@ export interface VerifyResult {
   /** Every per-contract gate result, exactly as written to the attestation bundles. */
   gates: ContractGateResult[];
   attestations: Array<{ contract: string; path: string; fingerprint: string }>;
+  /**
+   * Where gate 2's artifacts were written. `secure-deploy` deploys from here so
+   * that what goes on chain is what the gates hashed.
+   */
+  artifactsDir: string;
 }
 
 export async function verifyCommand(input: string, opts: VerifyOptions): Promise<VerifyResult> {
@@ -94,6 +99,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const solDir = path.join(outDir, "sol");
   const auditDir = path.join(outDir, "audit");
   const forgeRoot = path.join(outDir, "forge");
+  const artifactsDir = path.join(outDir, "artifacts");
   fs.mkdirSync(solDir, { recursive: true });
   fs.mkdirSync(auditDir, { recursive: true });
 
@@ -103,7 +109,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
 
   for (const e of emitted) fs.writeFileSync(path.join(solDir, `${e.name}.sol`), e.solidity, "utf8");
 
-  const allResults: VerifyResult = { ok: true, gates: [], attestations: [] };
+  const allResults: VerifyResult = { ok: true, gates: [], attestations: [], artifactsDir };
   const contractGates = new Map<string, GateResult[]>();
   for (const c of program.contracts) contractGates.set(c.name, []);
   const record = (contractName: string, result: GateResult): void => {
@@ -124,7 +130,8 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const nativeErrors = native.filter((d) => d.severity === "error");
   const gate1Ok = nativeErrors.length === 0;
   for (const c of program.contracts) {
-    const mine = nativeErrors.filter((d) => d.loc?.file === c.sourceFile).length;
+    // A diagnostic with no location cannot be attributed, so it counts against every contract.
+    const mine = nativeErrors.filter((d) => !d.loc || d.loc.file === c.sourceFile).length;
     const detail = `${native.length} diagnostic(s), ${nativeErrors.length} error(s)`;
     record(c.name, mine === 0 ? gatePassed("native-validator", detail, native.length) : gateFailed("native-validator", detail, native.length));
   }
@@ -139,7 +146,15 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const gate2Ok = compileResult.errors.length === 0;
   recordAll(gate2Ok ? gatePassed("solc-compile", "clean") : gateFailed("solc-compile", `${compileResult.errors.length} compile error(s)`));
   if (!gate2Ok) allResults.ok = false;
-  reportGate(gate2Ok, gate2Ok ? "clean" : `${compileResult.errors.length} error(s)`);
+  if (gate2Ok) {
+    // Write what was just verified so `secure-deploy` cannot deploy anything else.
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    for (const a of compileResult.artifacts) {
+      fs.writeFileSync(path.join(artifactsDir, `${a.contractName}.json`), JSON.stringify(a, null, 2), "utf8");
+    }
+    fs.writeFileSync(path.join(artifactsDir, "solc-input.json"), compileResult.standardJsonInput, "utf8");
+  }
+  reportGate(gate2Ok, gate2Ok ? `clean — ${compileResult.artifacts.length} artifact(s) → ${artifactsDir}` : `${compileResult.errors.length} error(s)`);
   for (const e of compileResult.errors.slice(0, 3)) console.error(pc.red(`  ${e.split("\n")[0]}`));
 
   // Gate 3 — SMTChecker
@@ -531,6 +546,12 @@ function ensureForgeProject(root: string): boolean {
     fs.rmSync(dest, { recursive: true, force: true }); // a half-cloned tree from an earlier failure
     spawnSync("git", ["clone", "--depth", "1", "https://github.com/foundry-rs/forge-std", dest], { stdio: "inherit", env: process.env });
   }
+  // Resolve OpenZeppelin the same way the compiler does, so this works when
+  // scriipture is an installed dependency and node_modules is not in cwd.
+  const ozRoot = resolveOZRoot();
+  const ozRemap = ozRoot
+    ? `"@openzeppelin/contracts/=${ozRoot}/",`
+    : `"@openzeppelin/=${path.resolve("node_modules/@openzeppelin")}/",`;
   const toml = `[profile.default]
 src = "src"
 test = "test"
@@ -539,7 +560,7 @@ libs = ["lib"]
 solc = "0.8.20"
 optimizer = true
 remappings = [
-  "@openzeppelin/=${path.resolve("node_modules/@openzeppelin")}/",
+  ${ozRemap}
   "forge-std/=lib/forge-std/src/"
 ]
 `;

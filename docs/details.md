@@ -59,7 +59,7 @@ What the pipeline gives you for free:
 - **Slither runs every build** (catches 70%+ of common vuln classes)
 - **Forge fuzz harnesses auto-generated** (1000+ random inputs per public method)
 - **Forge invariant tests auto-derived** from `@invariant` decorators
-- **Reproducible-build attestation** signed for auditor handoff
+- **Reproducible-build attestation** for auditor handoff — hashes, tool versions, every gate's real status, and (after `secure-deploy`) the network, address and tx it cleared. It is a JSON manifest; it is not cryptographically signed or pinned anywhere by Scriipture
 - **Source maps** for `.sol:line` → `.ts:line` stack-trace rewriting
 - **Etherscan/BaseScan verification** in one command
 - **Browser-wallet signing** so deploys never need private keys on your filesystem
@@ -264,7 +264,7 @@ mint(to: Address, amount: bigint): void {
 | `number` | `uint256` |
 | `boolean` | `bool` |
 | `string` (state) | `string` |
-| `string` (param/local) | `string memory` (or `calldata` after optimizer) |
+| `string` (param/local) | `string memory`; `string calldata` when the optimizer can prove the parameter is never written **and** the function is never called from inside the contract (a calldata parameter cannot accept a memory or storage argument) |
 | `Uint8` … `Uint256` | `uint8` … `uint256` (any multiple of 8) |
 | `Int8` … `Int256` | `int8` … `int256` (any multiple of 8) |
 | `Address` | `address` |
@@ -405,11 +405,13 @@ Transpiles `.ts` contracts in `<input>` to `.sol` in `out/sol/`. Runs optimizer 
 
 Pass `--no-optimize` to skip optimization (useful for debugging).
 
+`build` runs the validator first and writes nothing if it reports an error. Some constructs can only be emitted by guessing — a `?? fallback` whose left-hand type cannot be inferred, a destructuring with no known shape — and a guess produces a contract that compiles but is not the program you wrote. Pass `--no-validate` to emit anyway.
+
 The `pack-slots` pass is **advisory**: it reports how many storage slots you would save by declaring state variables in a different order, but never reorders them itself, because reordering rewrites the contract's storage layout (fatal for upgradeable proxies, and the kind of drift the audit tooling exists to flag). Pass `--reorder-storage` to apply the suggested order on a fresh, non-upgradeable contract.
 
 ### `validate <input>`
 
-Static checks (16 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
+Static checks (18 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
@@ -473,6 +475,17 @@ npx scriipture secure-deploy contracts -c MyToken -n base \
 
 The justification is recorded on every skipped gate in the attestation bundle, the same way `@unsafe("…")` and `@allow*("…")` justifications are. Mythril (Gate 4) is opt-in via `--deep` and does not need a justification; it is recorded as `skipped` with `optIn: true`.
 
+**What is deployed is what was verified.** Gate 2 writes the artifacts it compiled to `out/artifacts/`, and `secure-deploy` deploys from there rather than from whatever `scriipture compile` last left on disk. After the transaction is mined it rewrites the contract's attestation with a `deployment` record and prints the new fingerprint, so the gate results are tied to the address they cleared:
+
+| Field | Meaning |
+|---|---|
+| `network`, `address`, `txHash`, `from`, `deployedAt` | where it went |
+| `artifactDeployedBytecode` | sha256 of the bytecode actually sent — **must** equal `hashes.deployedBytecode`, or `secure-deploy` refuses to stamp and exits non-zero |
+| `onchainDeployedBytecode` | sha256 of `eth_getCode(address)` after the deploy, when the node could be reached |
+| `onchainMatchesArtifact` | whether those two agree. `false` is normal for a contract with immutables or linked libraries, since those are substituted at construction; both hashes are recorded either way |
+
+Without that binding an attestation could assert that audited source lives at an address whose code nobody compared — a stale `out/artifacts/` file is enough to make it false. `secure-deploy` accepts the same `--skip`, `--fuzz-runs`, `--mythril-timeout` and `--deep` flags as `verify`.
+
 ### `verify-source <Contract> -n <network>`
 
 Submits source to the chain's Etherscan-family explorer via the v2 multichain API. Reads the address + constructor args from the deploy log automatically.
@@ -530,7 +543,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 16 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 19 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | native `solc` **built with a Horn solver** | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. See [Getting a solc that can actually run it](#smt-solver) — without one the gate is recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
@@ -767,7 +780,7 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Compile | solc | hardhat compile | forge build | **scriipture compile** |
 | Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
-| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 16 native rules) |
+| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 18 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
 | Deploy | ethers/viem script | hardhat-deploy | cast/forge | **browser-wallet first-class** |
 | Source verification | manual upload to BaseScan | hardhat-verify plugin | forge verify-contract | **auto on every deploy** |
