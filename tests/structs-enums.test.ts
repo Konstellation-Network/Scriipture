@@ -115,8 +115,27 @@ describe("declarations referenced before they are declared", () => {
     // via the mapping value type, one struct deep
     expect(sol).toContain("proposals[id] = Proposal({id: id, meta: Meta({title: title, votes: 0}), status: Status.Pending});");
     // via `as Proposal` alone -- the local it initialises has no annotation
-    expect(sol).toContain("p = Proposal({id: id, meta: Meta({title: title, votes: 0}), status: Status.Pending});");
+    expect(sol).toContain("Proposal memory p = Proposal({id: id, meta: Meta({title: title, votes: 0}), status: Status.Pending});");
   });
+
+  it("types an untyped local from an own method that returns a struct", () => {
+    const { program } = parseContractFiles([FORWARD]);
+    const sol = emitProgram(program)[0]!.solidity;
+    expect(sol).toContain("Proposal memory p = draft(id, \"copy\");");
+    expect(sol).not.toContain("uint256 p =");
+  });
+
+  it("the emitted contract compiles with solc", () => {
+    const { program } = parseContractFiles([FORWARD]);
+    optimizeProgram(program);
+    const sol = emitProgram(program)[0]!.solidity;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-forward-"));
+    const file = path.join(dir, "Forward.sol");
+    fs.writeFileSync(file, sol, "utf8");
+    const result = compileSolidity({ solFiles: [file], config: ConfigSchema.parse({}) });
+    expect(result.errors).toEqual([]);
+    expect(result.artifacts.map((a) => a.contractName)).toContain("Forward");
+  }, 60_000);
 
   it("still leaves a method-only interface unregistered when another struct names it", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-forward-"));

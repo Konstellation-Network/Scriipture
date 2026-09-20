@@ -67,7 +67,7 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return lines;
     }
     case "let": {
-      const type = stmt.type ?? (stmt.init ? inferTypeFromStorage(stmt.init, ctx) : undefined);
+      const type = stmt.type ?? (stmt.init ? inferTypeFromStorage(stmt.init, ctx) ?? inferStructType(stmt.init, ctx) : undefined);
       // A struct local bound directly to a storage slot is a reference, not a copy:
       // `const p = this.proposals.get(id)` must become `Proposal storage p = proposals[id];`
       // or writes through `p` would silently go to a memory copy.
@@ -118,6 +118,21 @@ function inferTypeFromStorage(expr: IRExpression, ctx: EmitContext): IRType | un
   if (!root.indexed) return root.type;
   if (root.type.kind === "mapping") return root.type.value;
   if (root.type.kind === "array") return root.type.element;
+  return undefined;
+}
+
+/**
+ * An untyped local holding a struct value: `const p = { … } as Proposal` or
+ * `const p = this.draft(id)` where `draft` returns a struct. Without this the
+ * `uint256` fallback below produces `uint256 p = Proposal({…})`.
+ */
+function inferStructType(expr: IRExpression, ctx: EmitContext): IRType | undefined {
+  const e = unwrap(expr);
+  if (e.kind === "object" && e.structName) return { kind: "struct", name: e.structName };
+  if (e.kind === "call" && e.callee.kind === "member" && e.callee.object.kind === "this") {
+    const ret = ctx.fnReturnTypes?.get(e.callee.property);
+    if (ret?.kind === "struct") return ret;
+  }
   return undefined;
 }
 
