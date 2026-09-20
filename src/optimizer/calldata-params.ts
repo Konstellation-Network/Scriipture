@@ -50,7 +50,7 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
     for (const p of fn.params) {
       if (p.location) continue;
       if (!isCalldataCandidate(p)) continue;
-      if (mutated.get(fn.name)?.has(p.name)) continue;
+      if (mutated.get(fn)?.has(p.name)) continue;
       if (againstStorage.has(p.name)) continue;
       p.location = "calldata";
       changes.push({
@@ -123,16 +123,19 @@ function directlyMutated(fn: IRFunction, aliases: Map<string, string>): Set<stri
  * `values` is calldata would no longer see the write, where TypeScript (and
  * a memory parameter) would. Closed under calls, to a fixed point.
  */
-function mutatedParams(contract: IRContract): Map<string, Set<string>> {
-  const byName = new Map(contract.functions.map((f) => [f.name, f]));
-  const aliases = new Map(contract.functions.map((f) => [f.name, paramAliases(contract, f)]));
-  const mutated = new Map(contract.functions.map((f) => [f.name, directlyMutated(f, aliases.get(f.name)!)]));
+function mutatedParams(contract: IRContract): Map<IRFunction, Set<string>> {
+  // Keyed by the function itself: Solidity allows overloads, and keying by name
+  // let two same-named functions share one mutation set.
+  const byName = new Map<string, IRFunction[]>();
+  for (const f of contract.functions) byName.set(f.name, [...(byName.get(f.name) ?? []), f]);
+  const aliases = new Map(contract.functions.map((f) => [f, paramAliases(contract, f)]));
+  const mutated = new Map(contract.functions.map((f) => [f, directlyMutated(f, aliases.get(f)!)]));
 
   // Own-function calls whose arguments are rooted at a reference-typed parameter of the caller, or an alias of one.
-  const flows: Array<{ caller: string; param: string; callee: string; index: number }> = [];
+  const flows: Array<{ caller: IRFunction; param: string; callee: string; index: number }> = [];
   for (const fn of contract.functions) {
     const params = new Set(fn.params.map((p) => p.name));
-    const fnAliases = aliases.get(fn.name)!;
+    const fnAliases = aliases.get(fn)!;
     walkScoped(fn.body, typeEnvFor(contract, fn), (stmt, scope) => {
       walkExpressionsInStatement(stmt, (e) => {
         if (e.kind !== "call") return;
@@ -146,7 +149,7 @@ function mutatedParams(contract: IRContract): Map<string, Set<string>> {
           // A value-typed element (`values[0]` of `bigint[]`) is copied whatever the location.
           const type = inferType(arg, scope);
           if (type && !needsLocationQualifier(type)) return;
-          flows.push({ caller: fn.name, param, callee, index });
+          flows.push({ caller: fn, param, callee, index });
         });
       });
     });
@@ -156,8 +159,13 @@ function mutatedParams(contract: IRContract): Map<string, Set<string>> {
   while (changed) {
     changed = false;
     for (const f of flows) {
-      const target = byName.get(f.callee)?.params[f.index]?.name;
-      if (!target || !mutated.get(f.callee)?.has(target)) continue;
+      // An overloaded name cannot be resolved by arity alone here, so any
+      // candidate that writes to the matching position marks the argument.
+      const writes = (byName.get(f.callee) ?? []).some((candidate) => {
+        const target = candidate.params[f.index]?.name;
+        return !!target && !!mutated.get(candidate)?.has(target);
+      });
+      if (!writes) continue;
       const set = mutated.get(f.caller)!;
       if (!set.has(f.param)) {
         set.add(f.param);

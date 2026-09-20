@@ -21,6 +21,7 @@ import type {
   SourceLocation,
 } from "../ir/types";
 import { walkStatements, walkExpressionsInStatement } from "../optimizer/walk";
+import { SUPPORTED_ASSIGN_OPS, SUPPORTED_BINARY_OPS } from "../mapper/expressions";
 
 export interface ParseDiagnostic {
   message: string;
@@ -123,6 +124,18 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
       }
     } else if (ts.isConstructorDeclaration(member)) {
       functions.push(parseConstructor(member, ctx));
+    } else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
+      // Dropping these silently removed code, and the `constant` pass then saw
+      // a state variable nothing assigned and froze it.
+      ctx.diagnostics.push({
+        message: `${ts.isGetAccessor(member) ? "getter" : "setter"} "${member.name.getText(ctx.sourceFile)}" has no Solidity equivalent; write it as a method (\`${member.name.getText(ctx.sourceFile)}(): T\` / \`set${cap(member.name.getText(ctx.sourceFile))}(v: T): void\`)`,
+        loc: loc(member, ctx),
+      });
+    } else if (!isIgnorableMember(member)) {
+      ctx.diagnostics.push({
+        message: `class member of kind ${ts.SyntaxKind[member.kind]} cannot be lowered to Solidity`,
+        loc: loc(member, ctx),
+      });
     }
   }
 
@@ -202,19 +215,71 @@ function parseEvent(method: ts.MethodDeclaration, ctx: ParseContext): IREventDec
   return { name, params, natspec: extractNatspec(method, ctx), loc: loc(method, ctx) };
 }
 
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Members that carry no contract meaning, so silence about them is correct. */
+function isIgnorableMember(m: ts.ClassElement): boolean {
+  return ts.isSemicolonClassElement(m) || ts.isClassStaticBlockDeclaration(m);
+}
+
+/**
+ * TypeScript's own visibility keywords, which the decorator table never saw:
+ * `private helper()` was emitted `public` and became part of the external ABI.
+ * `protected` is Solidity's `internal`. Returns undefined when none is written.
+ */
+function visibilityModifier(node: ts.Node, ctx: ParseContext): "public" | "internal" | "private" | undefined {
+  if (!ts.canHaveModifiers(node)) return undefined;
+  for (const m of ts.getModifiers(node) ?? []) {
+    if (m.kind === ts.SyntaxKind.PrivateKeyword) return "private";
+    if (m.kind === ts.SyntaxKind.ProtectedKeyword) return "internal";
+    if (m.kind === ts.SyntaxKind.PublicKeyword) return "public";
+  }
+  return undefined;
+}
+
+/** `static` has no contract meaning: the member would silently become contract state. */
+function reportStatic(node: ts.Node, name: string, ctx: ParseContext): void {
+  if (!ts.canHaveModifiers(node)) return;
+  if ((ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.StaticKeyword)) {
+    ctx.diagnostics.push({
+      message: `"${name}" is static; a contract has no static members, and it would be emitted as contract state`,
+      loc: loc(node, ctx),
+    });
+  }
+}
+
 function parseStateVar(prop: ts.PropertyDeclaration, ctx: ParseContext): IRStateVar {
   const name = prop.name.getText(ctx.sourceFile);
   const type = prop.type ? parseType(prop.type, ctx) : { kind: "custom", name: "unknown" } as IRType;
   const decorators = parseDecorators(prop, ctx);
   const initializer = prop.initializer ? parseExpression(prop.initializer, ctx) : undefined;
-  return { name, type, decorators, initializer, natspec: extractNatspec(prop, ctx), loc: loc(prop, ctx) };
+  reportStatic(prop, name, ctx);
+  return {
+    name,
+    type,
+    decorators,
+    initializer,
+    visibility: visibilityModifier(prop, ctx),
+    natspec: extractNatspec(prop, ctx),
+    loc: loc(prop, ctx),
+  };
 }
 
 function parseMethod(method: ts.MethodDeclaration, ctx: ParseContext): IRFunction {
   const name = method.name.getText(ctx.sourceFile);
   const params = method.parameters.map((p) => parseParam(p, ctx));
   const returnType = method.type ? parseType(method.type, ctx) : { kind: "primitive", name: "void" } as IRType;
-  const decorators = parseDecorators(method, ctx);
+  // A visibility keyword becomes a decorator so that every consumer -- the
+  // emitter, the fuzz generator, the calldata pass -- sees it the one way they
+  // already understand. It goes first, so an explicit decorator still wins.
+  const modifier = visibilityModifier(method, ctx);
+  const decorators = [
+    ...(modifier ? [{ name: modifier, args: [] }] : []),
+    ...parseDecorators(method, ctx),
+  ];
+  reportStatic(method, name, ctx);
   const body = method.body ? parseBlockBody(method.body, ctx) : [];
 
   const isAssembly = decorators.some((d) => d.name === "assembly");
@@ -306,6 +371,21 @@ function extractSuperCall(args: IRExpression[], ctx: ParseContext, ctor: ts.Cons
 function parseParam(param: ts.ParameterDeclaration, ctx: ParseContext): IRParam {
   const name = param.name.getText(ctx.sourceFile);
   const type = param.type ? parseType(param.type, ctx) : { kind: "custom", name: "unknown" } as IRType;
+  // Solidity has none of these, and dropping them changed the function's
+  // interface without saying so: an optional parameter became required, a
+  // default vanished, and a rest parameter became a single array argument.
+  if (param.questionToken) {
+    ctx.diagnostics.push({ message: `parameter "${name}" is optional; Solidity has no optional parameters, so it would become required`, loc: loc(param, ctx) });
+  }
+  if (param.initializer) {
+    ctx.diagnostics.push({ message: `parameter "${name}" has a default value; Solidity has no default arguments, so the default would be dropped`, loc: loc(param, ctx) });
+  }
+  if (param.dotDotDotToken) {
+    ctx.diagnostics.push({ message: `parameter "${name}" is a rest parameter; Solidity has no variadics — declare it as an array parameter and pass one argument`, loc: loc(param, ctx) });
+  }
+  if (ts.canHaveModifiers(param) && (ts.getModifiers(param) ?? []).length > 0) {
+    ctx.diagnostics.push({ message: `parameter "${name}" is a parameter property; declare the state variable on the class instead`, loc: loc(param, ctx) });
+  }
   return { name, type };
 }
 
@@ -614,7 +694,50 @@ function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
   if (ts.isThrowStatement(stmt)) {
     return { kind: "throw", argument: parseExpression(stmt.expression, ctx), loc: l };
   }
+  if (ts.isBreakStatement(stmt)) return { kind: "break", loc: l };
+  if (ts.isContinueStatement(stmt)) return { kind: "continue", loc: l };
+  if (stmt.kind === ts.SyntaxKind.EmptyStatement) return { kind: "block", body: [], loc: l };
+  // Anything left would be emitted as its TypeScript text: `1n` literals and
+  // un-rewritten `this.` reaching solc, which then reports a parse error
+  // against generated Solidity the developer never wrote.
+  ctx.diagnostics.push({
+    message: `${statementName(stmt)} has no Solidity equivalent and cannot be emitted`,
+    loc: l,
+  });
   return { kind: "raw", text: stmt.getText(ctx.sourceFile), loc: l };
+}
+
+const EXPRESSION_NAMES: Partial<Record<ts.SyntaxKind, string>> = {
+  [ts.SyntaxKind.TypeOfExpression]: "`typeof`",
+  [ts.SyntaxKind.AwaitExpression]: "`await`",
+  [ts.SyntaxKind.ArrowFunction]: "an arrow function",
+  [ts.SyntaxKind.FunctionExpression]: "a function expression",
+  [ts.SyntaxKind.SpreadElement]: "a spread element",
+  [ts.SyntaxKind.NullKeyword]: "`null`",
+  [ts.SyntaxKind.RegularExpressionLiteral]: "a regular expression",
+  [ts.SyntaxKind.VoidExpression]: "`void`",
+  [ts.SyntaxKind.ClassExpression]: "a class expression",
+  [ts.SyntaxKind.DeleteExpression]: "`delete` on a property",
+};
+
+function expressionName(expr: ts.Expression): string {
+  return EXPRESSION_NAMES[expr.kind] ?? `an expression of kind ${ts.SyntaxKind[expr.kind]}`;
+}
+
+const STATEMENT_NAMES: Partial<Record<ts.SyntaxKind, string>> = {
+  [ts.SyntaxKind.SwitchStatement]: "a `switch` statement",
+  [ts.SyntaxKind.DoStatement]: "a `do … while` loop",
+  [ts.SyntaxKind.TryStatement]: "a `try` / `catch` block",
+  [ts.SyntaxKind.ForOfStatement]: "a `for … of` loop",
+  [ts.SyntaxKind.ForInStatement]: "a `for … in` loop",
+  [ts.SyntaxKind.LabeledStatement]: "a labelled statement",
+  [ts.SyntaxKind.WithStatement]: "a `with` block",
+  [ts.SyntaxKind.FunctionDeclaration]: "a nested function declaration",
+  [ts.SyntaxKind.ClassDeclaration]: "a nested class declaration",
+};
+
+function statementName(stmt: ts.Statement): string {
+  return STATEMENT_NAMES[stmt.kind] ?? `a statement of kind ${ts.SyntaxKind[stmt.kind]}`;
 }
 
 function branchToStatements(stmt: ts.Statement, ctx: ParseContext): IRStatement[] {
@@ -659,7 +782,12 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
   }
   if (expr.kind === ts.SyntaxKind.ThisKeyword) return { kind: "this" };
   if (expr.kind === ts.SyntaxKind.SuperKeyword) return { kind: "super" };
-  if (ts.isIdentifier(expr)) return { kind: "identifier", name: expr.text };
+  if (ts.isIdentifier(expr)) {
+    if (expr.text === "undefined") {
+      ctx.diagnostics.push({ message: "`undefined` has no Solidity equivalent; a storage read already yields the type's default", loc: loc(expr, ctx) });
+    }
+    return { kind: "identifier", name: expr.text };
+  }
   if (ts.isPropertyAccessExpression(expr)) {
     return {
       kind: "member",
@@ -700,7 +828,14 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
     const right = parseExpression(expr.right, ctx);
     if (opText === "??") return { kind: "nullish", left, right };
     if (opText.endsWith("=") && !["==", "!=", "===", "!==", "<=", ">="].includes(opText)) {
+      if (!SUPPORTED_ASSIGN_OPS.has(opText)) {
+        ctx.diagnostics.push({ message: `the "${opText}" operator has no Solidity equivalent`, loc: loc(expr, ctx) });
+      }
       return { kind: "assign", op: opText, left, right };
+    }
+    if (!SUPPORTED_BINARY_OPS.has(opText)) {
+      // `instanceof`, `in`, `>>>` would each be emitted verbatim.
+      ctx.diagnostics.push({ message: `the "${opText}" operator has no Solidity equivalent`, loc: loc(expr, ctx) });
     }
     return { kind: "binary", op: opText, left, right };
   }
@@ -729,6 +864,23 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
   if (ts.isTemplateExpression(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
     return parseTemplate(expr, ctx);
   }
+  if (ts.isArrayLiteralExpression(expr)) {
+    // `[]` is how an array state variable is initialised, and the emitter drops
+    // that initializer, so it is not an error. A populated one would be emitted
+    // as its TypeScript text, `1n` and all.
+    if (expr.elements.length > 0) {
+      ctx.diagnostics.push({
+        message: "an array literal has no Solidity equivalent; assign elements individually, or `push` them",
+        loc: loc(expr, ctx),
+      });
+    }
+    return { kind: "raw", text: "[]" };
+  }
+  // Anything left would reach solc as TypeScript text.
+  ctx.diagnostics.push({
+    message: `${expressionName(expr)} has no Solidity equivalent and cannot be emitted`,
+    loc: loc(expr, ctx),
+  });
   return { kind: "raw", text: expr.getText(ctx.sourceFile) };
 }
 

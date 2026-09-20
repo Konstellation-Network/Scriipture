@@ -90,6 +90,11 @@ const STANDARD_IMPORTS: Record<string, string> = {
   Test: "forge-std/Test.sol",
 };
 
+/** The import path for a base contract Scriipture bundles, or undefined for a user-defined one. */
+export function standardImportFor(base: string): string | undefined {
+  return STANDARD_IMPORTS[base];
+}
+
 export interface ContractResolution {
   imports: Set<string>;
   inheritedContracts: string[];

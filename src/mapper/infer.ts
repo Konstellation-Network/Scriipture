@@ -16,7 +16,11 @@ export interface TypeEnv {
   storageLocals?: Set<string>;
   /** Structs declared alongside the contract, so field access can be typed. */
   structs?: Map<string, IRStructDecl>;
-  /** Return type of each of the contract's own functions, so `const p = this.draft(id)` can be typed. */
+  /**
+   * Return type of each of the contract's own functions, so a local bound to
+   * `this.draft(id)` is typed by what `draft` returns. Without it the `uint256`
+   * fallback produces `uint256 p = draft(id)`.
+   */
   fnReturnTypes?: Map<string, IRType>;
 }
 
@@ -115,24 +119,23 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
     }
     case "index":
       return elementOf(inferType(e.object, env));
-    case "call":
-      // `m.get(k)` is a mapping read.
+    case "call": {
+      // `m.get(k)` is a mapping read; everything else needs a signature we do not track.
       if (e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) {
         return elementOf(inferType(e.callee.object, env));
       }
-      // `this.f(…)` returning a struct: without this, `const p = this.draft(id)` fell to the
-      // `uint256` default. Other return types stay untyped here until signatures are tracked fully.
-      if (e.callee.kind === "member" && e.callee.object.kind === "this") {
-        const ret = env.fnReturnTypes?.get(e.callee.property);
-        if (ret?.kind === "struct") return ret;
-      }
-      return undefined;
-    case "object":
-      // `{ … } as Proposal`, or a literal the resolver already named from its slot.
-      return e.structName ? { kind: "struct", name: e.structName } : undefined;
+      // A call to one of the contract's own functions: `this.draft(id)`, and
+      // the bare form the emitter rewrites it to.
+      const own = e.callee.kind === "member" && e.callee.object.kind === "this" ? e.callee.property
+        : e.callee.kind === "identifier" ? e.callee.name : undefined;
+      return own ? env.fnReturnTypes?.get(own) : undefined;
+    }
     case "conditional":
       if (mixesStorageAndMemory(e, env)) return undefined;
       return inferType(e.consequent, env) ?? inferType(e.alternate, env);
+    case "object":
+      // `{ … } as Proposal`, once resolveStructLiterals has named it.
+      return e.structName ? { kind: "struct", name: e.structName } : undefined;
     case "literal":
       if (e.literalType === "boolean") return { kind: "primitive", name: "bool" };
       if (e.literalType === "string") return { kind: "primitive", name: "string" };
@@ -273,11 +276,16 @@ export function functionScope<T extends TypeEnv>(env: T, fn: IRFunction): T & Sc
 }
 
 export function typeEnvFor(contract: IRContract, fn: IRFunction): Scope {
-  return functionScope({
+  return functionScope(contractTypeEnv(contract), fn);
+}
+
+/** The part of a type environment that does not depend on which function is being looked at. */
+export function contractTypeEnv(contract: IRContract): TypeEnv {
+  return {
     stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])),
     structs: new Map(contract.structs.map((s) => [s.name, s])),
     fnReturnTypes: new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType])),
-  }, fn);
+  };
 }
 
 /**

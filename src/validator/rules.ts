@@ -6,12 +6,47 @@ import type {
   IRStatement,
   SourceLocation,
 } from "../ir/types";
-import { resolveContract } from "../mapper/decorators";
+import { resolveContract, standardImportFor } from "../mapper/decorators";
 import type { Diagnostic } from "./diagnostics";
 import { getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
 import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, mixesStorageAndMemory, typeEnvFor, walkScoped } from "../mapper/infer";
+
+/**
+ * Every `rule` identifier the native validator can emit. Not every one is an
+ * entry in `RULES`: some checks need the whole contract or the whole program.
+ * A test asserts this list matches the source, so the count quoted in the docs
+ * cannot drift away from the code again.
+ */
+export const RULE_IDS = [
+  "constructor-no-decorators",
+  "destructure-shape",
+  "event-too-many-indexed",
+  "integer-division",
+  "no-arbitrary-call-target",
+  "no-block-timestamp-randomness",
+  "no-delegatecall-to-input",
+  "no-msg-value-in-non-payable",
+  "no-selfdestruct",
+  "no-shadowed-state",
+  "no-transfer-in-loop",
+  "no-tx-origin",
+  "no-unchecked-low-level-call",
+  "no-zero-address-mint",
+  "nullish-fallback",
+  "payable-visibility",
+  "pure-no-mutate",
+  "require-checked-address",
+  "solidity-reserved-identifier",
+  "state-mutation-without-event",
+  "storage-alias",
+  "unbounded-loop",
+  "undeclared-error",
+  "undeclared-event",
+  "unknown-base-contract",
+  "view-no-mutate",
+] as const;
 
 type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
 
@@ -21,8 +56,20 @@ export interface ValidateOptions {
 
 export function validateProgram(program: IRProgram, opts: ValidateOptions = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
+  const known = new Set(program.contracts.map((c) => c.name));
   for (const contract of program.contracts) {
     out.push(...validateContract(contract, opts));
+    // Needs the whole program, so it cannot live in validateContract.
+    for (const base of contract.bases) {
+      if (standardImportFor(base) || known.has(base)) continue;
+      out.push({
+        rule: "unknown-base-contract",
+        severity: "error",
+        message: `"${contract.name}" extends "${base}", which is neither a contract in this build nor one Scriipture bundles, so the emitted Solidity would not compile`,
+        loc: contract.loc,
+        fix: `define ${base} in a file passed to this build, or extend one of the bundled bases`,
+      });
+    }
   }
   if (opts.secure) {
     return out.map((d) => applySecureEscalation(d));
