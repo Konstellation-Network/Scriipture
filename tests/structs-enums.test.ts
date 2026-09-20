@@ -94,3 +94,43 @@ describe("structs, enums and fixed-width integers", () => {
     expect(messages.some((m) => m.includes("object literal has no struct type"))).toBe(true);
   });
 });
+
+describe("declarations referenced before they are declared", () => {
+  const FORWARD = path.join(ROOT, "tests/contracts/ForwardRefs.ts");
+
+  it("resolves struct fields whose struct or enum is declared later in the file", () => {
+    const { program, diagnostics } = parseContractFiles([FORWARD]);
+    expect(diagnostics).toEqual([]);
+    const proposal = program.contracts[0]!.structs.find((s) => s.name === "Proposal")!;
+    expect(proposal.fields.map((f) => [f.name, f.type])).toEqual([
+      ["id", { kind: "primitive", name: "uint256" }],
+      ["meta", { kind: "struct", name: "Meta" }],
+      ["status", { kind: "enum", name: "Status" }],
+    ]);
+  });
+
+  it("types nested literals through a forward-referenced field, and under a cast literal in an untyped local", () => {
+    const { program } = parseContractFiles([FORWARD]);
+    const sol = emitProgram(program)[0]!.solidity;
+    // via the mapping value type, one struct deep
+    expect(sol).toContain("proposals[id] = Proposal({id: id, meta: Meta({title: title, votes: 0}), status: Status.Pending});");
+    // via `as Proposal` alone -- the local it initialises has no annotation
+    expect(sol).toContain("p = Proposal({id: id, meta: Meta({title: title, votes: 0}), status: Status.Pending});");
+  });
+
+  it("still leaves a method-only interface unregistered when another struct names it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-forward-"));
+    const file = path.join(dir, "Hooks.ts");
+    fs.writeFileSync(file, [
+      `import { storage } from "scriipture";`,
+      `export interface Job { id: bigint; hooks: Hooks }`,
+      `export interface Hooks { onDone(): void }`,
+      `export class Jobs { @storage next: bigint = 0n; }`,
+    ].join("\n"), "utf8");
+    const { program, diagnostics } = parseContractFiles([file]);
+    expect(diagnostics).toEqual([]);
+    const c = program.contracts[0]!;
+    expect(c.structs.map((s) => s.name)).toEqual(["Job"]);
+    expect(c.structs[0]!.fields[1]!.type).toEqual({ kind: "custom", name: "Hooks" });
+  });
+});
