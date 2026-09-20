@@ -357,8 +357,10 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       }
       fs.mkdirSync(path.join(forgeRoot, "src"), { recursive: true });
       fs.mkdirSync(path.join(forgeRoot, "test"), { recursive: true });
-      const srcPath = path.join(forgeRoot, "src", `${c.name}.sol`);
-      if (!fs.existsSync(srcPath)) fs.writeFileSync(srcPath, emitted.find((e) => e.name === c.name)!.solidity, "utf8");
+      // Always refresh: gate 7 writes this file too, but it is skipped under
+      // `--skip fuzz`, and out/forge persists across runs, so an existing copy
+      // may be from a previous version of the contract.
+      fs.writeFileSync(path.join(forgeRoot, "src", `${c.name}.sol`), emitted.find((e) => e.name === c.name)!.solidity, "utf8");
       fs.writeFileSync(path.join(forgeRoot, "test", `${c.name}.inv.t.sol`), sol, "utf8");
       emittedInvariants.set(c.name, invs.length);
     }
