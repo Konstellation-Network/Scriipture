@@ -77,6 +77,8 @@ export type IRStatement =
    */
   | { kind: "destructure"; names: Array<string | undefined>; types?: IRType[]; init: IRExpression; isConst: boolean; loc?: SourceLocation }
   | { kind: "throw"; argument: IRExpression; loc?: SourceLocation }
+  | { kind: "break"; loc?: SourceLocation }
+  | { kind: "continue"; loc?: SourceLocation }
   | { kind: "raw"; text: string; loc?: SourceLocation };
 
 export interface IRParam {

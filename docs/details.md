@@ -281,6 +281,43 @@ mint(to: Address, amount: bigint): void {
 
 `bigint` is the canonical numeric type — TS forces you to write `0n` instead of `0`, which forces you to think about whether you mean "the integer 0" vs "the JS number 0." In Solidity-land all numbers are bigint-equivalent.
 
+### Visibility
+
+A function is `public` unless you say otherwise. Both spellings work and mean the same thing:
+
+```ts
+private helper(v: bigint): bigint { return v * 2n; }   // → function helper(...) private
+@private_ other(): void {}                             // → function other() private
+```
+
+TypeScript's `private` maps to Solidity `private` and `protected` to `internal`, on fields as well as methods. `public` and `private` are reserved words in TypeScript, so the decorator spellings carry a trailing underscore. A decorator wins over a keyword if you write both.
+
+### What has no Solidity equivalent
+
+These are reported at the line you wrote, rather than dropped or passed through to solc:
+
+| In TypeScript | Why |
+|---|---|
+| `get x()` / `set x(v)` | Solidity has no accessors; write a method. Dropping them used to remove the only writer of a state variable, after which the optimizer marked it `constant` |
+| `f(a?: T)`, `f(a = 1n)`, `f(...xs)` | Solidity has no optional parameters, default arguments or variadics |
+| `static`, parameter properties | a contract has no static members |
+| `switch`, `do … while`, `try` / `catch`, `for … of` | no equivalent statement; these used to reach solc as TypeScript text |
+| `[1n, 2n]`, `typeof`, `instanceof`, `>>>`, `undefined`, `null`, spreads, arrow functions | no equivalent expression; these used to reach solc as TypeScript text. An empty `[]` is fine: it is how an array state variable is initialised |
+| `extends` a contract that is not in the build | nothing to import |
+
+`break` and `continue` are supported. A base contract defined in the same build is imported automatically from `./<Name>.sol`.
+
+### Strings
+
+Solidity has no `==` or `+` for `string` and `bytes`, so Scriipture lowers them:
+
+```ts
+this.name === other      // → keccak256(bytes(name)) == keccak256(bytes(other))
+this.name + suffix       // → string.concat(name, suffix)
+```
+
+`bytes` values hash directly and concatenate with `bytes.concat`. Comparing hashes costs gas proportional to length; compare `bytes32` hashes you already store if that matters.
+
 ### Fixed-width integers
 
 `bigint` is `uint256`. Annotate with `Uint8` … `Uint256` or `Int8` … `Int256` to get a narrower Solidity type. The aliases are branded `bigint`s, so literals need a cast:
@@ -411,7 +448,7 @@ The `pack-slots` pass is **advisory**: it reports how many storage slots you wou
 
 ### `validate <input>`
 
-Static checks (18 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
+Static checks (26 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
@@ -543,7 +580,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 19 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 26 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | native `solc` **built with a Horn solver** | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. See [Getting a solc that can actually run it](#smt-solver) — without one the gate is recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
@@ -780,7 +817,7 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Compile | solc | hardhat compile | forge build | **scriipture compile** |
 | Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
-| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 18 native rules) |
+| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 26 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
 | Deploy | ethers/viem script | hardhat-deploy | cast/forge | **browser-wallet first-class** |
 | Source verification | manual upload to BaseScan | hardhat-verify plugin | forge verify-contract | **auto on every deploy** |

@@ -1,6 +1,12 @@
 import type { IRExpression } from "../ir/types";
 import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "./infer";
 
+
+/**
+ * Every binary operator the emitter can lower. An operator absent from here
+ * would be emitted verbatim (`a instanceof b`, `a >>> b`), so the parser checks
+ * against this list rather than letting solc report it against generated code.
+ */
 const BINARY_OP_MAP: Record<string, string> = {
   "===": "==",
   "!==": "!=",
@@ -24,6 +30,13 @@ const BINARY_OP_MAP: Record<string, string> = {
   "<<": "<<",
   ">>": ">>",
 };
+
+export const SUPPORTED_BINARY_OPS: ReadonlySet<string> = new Set(Object.keys(BINARY_OP_MAP));
+
+/** Compound assignments the emitter passes through unchanged, plus plain `=`. */
+export const SUPPORTED_ASSIGN_OPS: ReadonlySet<string> = new Set([
+  "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "**=",
+]);
 
 const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
   msg: true,
@@ -59,10 +72,8 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
       return emitCall(expr, ctx);
     case "new":
       return `new ${expr.className}(${expr.args.map((a) => emit(a, ctx)).join(", ")})`;
-    case "binary": {
-      const op = BINARY_OP_MAP[expr.op] ?? expr.op;
-      return `${emit(expr.left, ctx)} ${op} ${emit(expr.right, ctx)}`;
-    }
+    case "binary":
+      return emitBinary(expr, ctx);
     case "unary": {
       const needsParens = expr.operand.kind === "binary" || expr.operand.kind === "conditional" || expr.operand.kind === "assign";
       const inner = needsParens ? `(${emit(expr.operand, ctx)})` : emit(expr.operand, ctx);
@@ -75,7 +86,7 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
     case "nullish":
       return emitNullish(expr, ctx);
     case "assign":
-      return `${emit(expr.left, ctx)} ${expr.op} ${emit(expr.right, ctx)}`;
+      return emitAssign(expr, ctx);
     case "templateString":
       return emitTemplate(expr, ctx);
     case "object": {
@@ -101,6 +112,54 @@ function emitNullish(expr: Extract<IRExpression, { kind: "nullish" }>, ctx: Emit
   if (!test) return left;
   const leftAtom = isAtomic(expr.left) ? left : `(${left})`;
   return `(${test.replace("$", leftAtom)} ? ${emit(expr.right, ctx)} : ${leftAtom})`;
+}
+
+const EQUALITY_OPS = new Set(["==", "!=", "===", "!=="]);
+
+/**
+ * `s += x` on a `string` or `bytes` has no Solidity form either: `+=` is not
+ * defined for them any more than `+` is. It becomes an assignment of the
+ * concatenation. The left side is emitted twice, which is a read, never a call:
+ * an assignment target with side effects is not valid TypeScript.
+ */
+function emitAssign(expr: Extract<IRExpression, { kind: "assign" }>, ctx: EmitContext): string {
+  const left = emit(expr.left, ctx);
+  const right = emit(expr.right, ctx);
+  if (expr.op === "+=") {
+    const t = inferType(expr.left, ctx);
+    if (t?.kind === "primitive" && (t.name === "string" || t.name === "bytes")) {
+      return `${left} = ${t.name}.concat(${left}, ${right})`;
+    }
+  }
+  return `${left} ${expr.op} ${right}`;
+}
+
+/** `string` or `bytes` on either side, which Solidity's operators do not accept. */
+function dynamicBytesKind(expr: Extract<IRExpression, { kind: "binary" }>, ctx: EmitContext): "string" | "bytes" | undefined {
+  for (const side of [expr.left, expr.right]) {
+    const t = inferType(side, ctx);
+    if (t?.kind === "primitive" && (t.name === "string" || t.name === "bytes")) return t.name;
+  }
+  return undefined;
+}
+
+/**
+ * Solidity has no `==` and no `+` for `string` or `bytes`: `a === b` emitted
+ * `a == b` and `a + b` emitted `a + b`, neither of which compiles. Comparison
+ * lowers to a hash comparison and concatenation to `string.concat` /
+ * `bytes.concat`. Everything else is the plain operator.
+ */
+function emitBinary(expr: Extract<IRExpression, { kind: "binary" }>, ctx: EmitContext): string {
+  const op = BINARY_OP_MAP[expr.op] ?? expr.op;
+  const left = emit(expr.left, ctx);
+  const right = emit(expr.right, ctx);
+  const kind = dynamicBytesKind(expr, ctx);
+  if (kind) {
+    const hash = (v: string) => (kind === "string" ? `keccak256(bytes(${v}))` : `keccak256(${v})`);
+    if (EQUALITY_OPS.has(expr.op)) return `${hash(left)} ${op} ${hash(right)}`;
+    if (expr.op === "+") return `${kind}.concat(${left}, ${right})`;
+  }
+  return `${left} ${op} ${right}`;
 }
 
 function isAtomic(expr: IRExpression): boolean {

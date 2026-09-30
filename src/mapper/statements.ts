@@ -99,6 +99,10 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       });
       return [`${indent}(${parts.join(", ")}) = ${emitExpression(stmt.init, ctx)};`];
     }
+    case "break":
+      return [`${indent}break;`];
+    case "continue":
+      return [`${indent}continue;`];
     case "throw":
       return [`${indent}revert();`];
     case "raw":

@@ -9,18 +9,24 @@ import type {
   IRStateVar,
   IRStructDecl,
 } from "../ir/types";
-import { resolveContract, type ContractResolution } from "../mapper/decorators";
+import { resolveContract, standardImportFor, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
 import { solidityType } from "../mapper/types";
-import { functionScope } from "../mapper/infer";
+import { contractTypeEnv, functionScope } from "../mapper/infer";
 
 export interface EmitOptions {
   pragma?: string;
   license?: string;
+  /**
+   * Contracts defined elsewhere in the same program. A base named here is
+   * emitted to its own `<Name>.sol` beside this one and imported from it;
+   * without that, `contract Child is Base` reaches solc with Base undefined.
+   */
+  knownContracts?: Set<string>;
 }
 
-const DEFAULTS: Required<EmitOptions> = {
+const DEFAULTS: Required<Omit<EmitOptions, "knownContracts">> = {
   pragma: "^0.8.20",
   license: "MIT",
 };
@@ -32,10 +38,11 @@ export interface EmittedContract {
 }
 
 export function emitProgram(program: IRProgram, opts: EmitOptions = {}): EmittedContract[] {
+  const knownContracts = opts.knownContracts ?? new Set(program.contracts.map((c) => c.name));
   return program.contracts.map((c) => ({
     name: c.name,
     sourceFile: c.sourceFile,
-    solidity: emitContract(c, opts),
+    solidity: emitContract(c, { ...opts, knownContracts }),
   }));
 }
 
@@ -43,17 +50,19 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   const o = { ...DEFAULTS, ...opts };
   const resolution = resolveContract(contract);
   const stateVarNames = new Set(contract.stateVars.map((v) => v.name));
-  const stateVarTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
-  const structs = new Map(contract.structs.map((s) => [s.name, s]));
-  const fnReturnTypes = new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType]));
-  const ctx: EmitContext = { stateVarNames, stateVarTypes, structs, fnReturnTypes };
+  const ctx: EmitContext = { stateVarNames, ...contractTypeEnv(contract) };
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
   lines.push(`pragma solidity ${o.pragma};`);
   lines.push("");
 
-  const imports = Array.from(resolution.imports).sort();
+  // A base that Scriipture bundles comes in through resolution.imports; one
+  // defined in this program sits in its own file next to this one.
+  const localBases = contract.bases
+    .filter((b) => !standardImportFor(b) && (o.knownContracts?.has(b) ?? false))
+    .map((b) => `./${b}.sol`);
+  const imports = Array.from(new Set([...resolution.imports, ...localBases])).sort();
   for (const imp of imports) lines.push(`import "${imp}";`);
   if (imports.length > 0) lines.push("");
 
