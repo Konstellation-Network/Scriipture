@@ -1,6 +1,6 @@
-import type { IRContract, IRExpression, IRFunction, IRStatement, IRStructDecl, IRType } from "../ir/types";
+import type { IRContract, IRExpression, IRFunction, IRProgram, IRStatement, IRStructDecl, IRType } from "../ir/types";
 import { exprContains, walkStatements } from "../optimizer/walk";
-import { aliasedPrimitive } from "./types";
+import { aliasedPrimitive, sameType } from "./types";
 
 /** Everything the emitter and validator know about identifier types at a given point. */
 export interface TypeEnv {
@@ -22,6 +22,12 @@ export interface TypeEnv {
    * fallback produces `uint256 p = draft(id)`.
    */
   fnReturnTypes?: Map<string, IRType>;
+  /**
+   * Return types of the functions of every other contract and interface in
+   * the build, by type name, so `at<IERC20>(t).transfer(to, v)` is known to
+   * be a `bool` and `new Child(v)` a `Child`.
+   */
+  externalFns?: Map<string, Map<string, IRType>>;
 }
 
 export function unwrapExpr(expr: IRExpression): IRExpression {
@@ -79,6 +85,61 @@ export function mixesStorageAndMemory(expr: IRExpression, env: TypeEnv): boolean
 }
 
 const UINT256: IRType = { kind: "primitive", name: "uint256" };
+const BOOL: IRType = { kind: "primitive", name: "bool" };
+const ADDRESS: IRType = { kind: "primitive", name: "address" };
+const BYTES: IRType = { kind: "primitive", name: "bytes" };
+const BYTES32: IRType = { kind: "primitive", name: "bytes32" };
+const prim = (name: string): IRType => ({ kind: "primitive", name } as IRType);
+
+/** Solidity's global functions, by what they return. */
+const GLOBAL_FN_TYPES: Record<string, IRType> = {
+  keccak256: BYTES32,
+  sha256: BYTES32,
+  ripemd160: prim("bytes20"),
+  ecrecover: ADDRESS,
+  blockhash: BYTES32,
+  blobhash: BYTES32,
+  gasleft: UINT256,
+  addmod: UINT256,
+  mulmod: UINT256,
+  payable: ADDRESS,
+  BigInt: UINT256,
+  Number: UINT256,
+};
+
+/** `abi.encode…`, `string.concat`, `bytes.concat`. */
+const NAMESPACE_FN_TYPES: Record<string, Record<string, IRType>> = {
+  abi: { encode: BYTES, encodePacked: BYTES, encodeWithSelector: BYTES, encodeWithSignature: BYTES, encodeCall: BYTES },
+  string: { concat: prim("string") },
+  bytes: { concat: BYTES },
+};
+
+/** Members of `msg`, `block` and `tx`. */
+const GLOBAL_MEMBER_TYPES: Record<string, Record<string, IRType>> = {
+  msg: { sender: ADDRESS, value: UINT256, data: BYTES, sig: prim("bytes4") },
+  block: { coinbase: ADDRESS, timestamp: UINT256, number: UINT256, chainid: UINT256, basefee: UINT256, blobbasefee: UINT256, prevrandao: UINT256, difficulty: UINT256, gaslimit: UINT256 },
+  tx: { origin: ADDRESS, gasprice: UINT256 },
+};
+
+/** Members of an `address`. */
+const ADDRESS_MEMBER_TYPES: Record<string, IRType> = { balance: UINT256, code: BYTES, codehash: BYTES32 };
+
+/** Members of `type(T)`, where `T` is `typeArgs[0]`: `max` / `min` are a `T`. */
+const TYPE_INFO_MEMBERS: Record<string, IRType> = { interfaceId: prim("bytes4"), name: prim("string"), creationCode: BYTES, runtimeCode: BYTES };
+
+const COMPARISON = new Set(["==", "!=", "===", "!==", "<", ">", "<=", ">=", "&&", "||"]);
+
+/** Elementary type names, which Solidity also uses as conversion functions: `uint8(x)`, `address(x)`. */
+const ELEMENTARY = /^(address|bool|string|bytes\d*|u?int\d+)$/;
+
+/** Low-level calls return `(bool success, bytes memory data)`. */
+const LOW_LEVEL_RESULT: IRType = { kind: "tuple", elements: [BOOL, BYTES] };
+
+function isAddressType(t: IRType | undefined): boolean {
+  if (!t) return false;
+  if (t.kind === "primitive") return t.name === "address";
+  return t.kind === "custom" && aliasedPrimitive(t.name)?.kind === "primitive" && (aliasedPrimitive(t.name) as { name: string }).name === "address";
+}
 
 /** Element type of a container: the value of a mapping, the element of an array. */
 function elementOf(type: IRType | undefined): IRType | undefined {
@@ -99,36 +160,82 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
     case "identifier":
       return env.localTypes?.get(e.name);
     case "member": {
-      if (e.object.kind === "this") return env.stateVarTypes?.get(e.property);
-      if (e.object.kind === "identifier" && e.object.name === "msg") {
-        if (e.property === "sender") return { kind: "primitive", name: "address" };
-        if (e.property === "value") return UINT256;
-        if (e.property === "data") return { kind: "primitive", name: "bytes" };
+      if (e.object.kind === "this") {
+        const t = env.stateVarTypes?.get(e.property);
+        if (t) return t;
+        return e.property === "address" ? ADDRESS : undefined; // `this.address` → `address(this)`
       }
-      if (e.object.kind === "identifier" && e.object.name === "block") {
-        if (e.property === "coinbase") return { kind: "primitive", name: "address" };
-        return UINT256;
+      if (e.object.kind === "identifier" && GLOBAL_MEMBER_TYPES[e.object.name] && !env.localTypes?.has(e.object.name)) {
+        return GLOBAL_MEMBER_TYPES[e.object.name]![e.property];
       }
       const objType = inferType(e.object, env);
       if (objType?.kind === "struct") {
         const field = env.structs?.get(objType.name)?.fields.find((f) => f.name === e.property);
         if (field) return field.type; // a struct may legitimately have a field called `length`
       }
+      if (e.object.kind === "call" && e.object.callee.kind === "identifier" && e.object.callee.name === "type" && e.object.typeArgs?.length === 1) {
+        if (e.property === "max" || e.property === "min") return e.object.typeArgs[0];
+        return TYPE_INFO_MEMBERS[e.property];
+      }
+      if (isAddressType(objType) && ADDRESS_MEMBER_TYPES[e.property]) return ADDRESS_MEMBER_TYPES[e.property];
       if (e.property === "length") return UINT256;
       return undefined;
     }
     case "index":
       return elementOf(inferType(e.object, env));
     case "call": {
-      // `m.get(k)` is a mapping read; everything else needs a signature we do not track.
+      if (e.cast && e.typeArgs?.[0]) return e.typeArgs[0];
+      // `m.get(k)` is a mapping read.
       if (e.callee.kind === "member" && e.callee.property === "get" && e.args.length === 1) {
         return elementOf(inferType(e.callee.object, env));
+      }
+      if (isLowLevelCall(e)) return LOW_LEVEL_RESULT;
+      if (e.callee.kind === "member" && e.callee.object.kind === "identifier" && !env.localTypes?.has(e.callee.object.name)) {
+        const ns = e.callee.object.name;
+        // `abi.decode<[bigint, Address]>(data)` is whatever it was told to decode.
+        if (ns === "abi" && e.callee.property === "decode") return e.typeArgs?.[0];
+        const t = NAMESPACE_FN_TYPES[ns]?.[e.callee.property];
+        if (t) return t;
       }
       // A call to one of the contract's own functions: `this.draft(id)`, and
       // the bare form the emitter rewrites it to.
       const own = e.callee.kind === "member" && e.callee.object.kind === "this" ? e.callee.property
         : e.callee.kind === "identifier" ? e.callee.name : undefined;
-      return own ? env.fnReturnTypes?.get(own) : undefined;
+      const ownType = own ? env.fnReturnTypes?.get(own) : undefined;
+      if (ownType) return ownType;
+      if (e.callee.kind === "identifier") {
+        const name = e.callee.name;
+        if (GLOBAL_FN_TYPES[name]) return GLOBAL_FN_TYPES[name];
+        if (ELEMENTARY.test(name)) return prim(name);
+        // `IERC20(t)`, the lowering of `at<IERC20>(t)`: the contract at that address.
+        if (env.externalFns?.has(name)) return { kind: "custom", name };
+        return undefined;
+      }
+      // `IERC20(t).balanceOf(a)`: a function of another contract or interface in the build.
+      if (e.callee.kind === "member") {
+        const target = inferType(e.callee.object, env);
+        if (target?.kind === "custom") return env.externalFns?.get(target.name)?.get(e.callee.property);
+      }
+      return undefined;
+    }
+    case "new":
+      return e.type ?? { kind: "custom", name: e.className };
+    case "tuple": {
+      const elements = e.elements.map((x) => (x ? inferType(x, env) : undefined));
+      return elements.every(Boolean) ? { kind: "tuple", elements: elements as IRType[] } : undefined;
+    }
+    case "unary":
+      if (e.op === "!") return BOOL;
+      if (e.op === "delete") return undefined;
+      return inferType(e.operand, env);
+    case "binary": {
+      if (COMPARISON.has(e.op)) return BOOL;
+      // The literal side takes the other side's type in Solidity, so prefer the non-literal.
+      const l = unwrapExpr(e.left).kind === "literal" ? undefined : inferType(e.left, env);
+      if (e.op === "<<" || e.op === ">>" || e.op === "**") return l ?? inferType(e.left, env);
+      const r = unwrapExpr(e.right).kind === "literal" ? undefined : inferType(e.right, env);
+      if (l && r && !sameType(l, r)) return undefined; // solc will reject it; do not guess which side wins
+      return l ?? r ?? inferType(e.left, env);
     }
     case "conditional":
       if (mixesStorageAndMemory(e, env)) return undefined;
@@ -158,16 +265,22 @@ export function isLowLevelCall(expr: IRExpression): boolean {
  * slot. The last case cannot be right in general, which is why
  * `destructure-shape` reports it as an error.
  */
-export function destructureTypes(stmt: Extract<IRStatement, { kind: "destructure" }>): IRType[] {
+export function destructureTypes(stmt: Extract<IRStatement, { kind: "destructure" }>, env: TypeEnv = {}): IRType[] {
   if (stmt.types && stmt.types.length > 0) {
     const out = [...stmt.types];
     while (out.length < stmt.names.length) out.push({ kind: "primitive", name: "uint256" });
     return out;
   }
-  if (isLowLevelCall(stmt.init)) {
-    return [{ kind: "primitive", name: "bool" }, { kind: "primitive", name: "bytes" }];
-  }
+  const inferred = inferType(stmt.init, env);
+  if (inferred?.kind === "tuple") return inferred.elements;
   return stmt.names.map(() => ({ kind: "primitive", name: "uint256" } as IRType));
+}
+
+/** Whether `destructureTypes` knows the component types rather than guessing `uint256`. */
+export function destructureShapeKnown(stmt: Extract<IRStatement, { kind: "destructure" }>, env: TypeEnv = {}): boolean {
+  if (stmt.types && stmt.types.length >= stmt.names.length) return true;
+  const inferred = inferType(stmt.init, env);
+  return inferred?.kind === "tuple" && inferred.elements.length >= stmt.names.length;
 }
 
 /** Solidity holds these by reference: a local bound to a storage path of one is a pointer, not a copy. */
@@ -221,7 +334,7 @@ export function declareLocal(stmt: IRStatement, scope: Scope): void {
     else scope.storageLocals.delete(stmt.name);
   }
   if (stmt.kind === "destructure") {
-    const types = destructureTypes(stmt);
+    const types = destructureTypes(stmt, scope);
     stmt.names.forEach((n, i) => {
       if (!n) return;
       if (types[i]) scope.localTypes.set(n, types[i]!);
@@ -256,6 +369,12 @@ export function walkScoped(stmts: IRStatement[], env: TypeEnv, visit: (stmt: IRS
       if (s.else) walkScoped(s.else, scope, visit);
     }
     if (s.kind === "while" || s.kind === "block" || s.kind === "unchecked") walkScoped(s.body, scope, visit);
+    if (s.kind === "try") {
+      const success = enterScope(scope);
+      for (const r of s.returns) if (r.name && !(r.type.kind === "custom" && r.type.name === "unknown")) success.localTypes.set(r.name, r.type);
+      walkScoped(s.body, success, visit);
+      for (const c of s.catches) walkScoped(c.body, scope, visit);
+    }
     declareLocal(s, scope);
   }
 }
@@ -275,16 +394,43 @@ export function functionScope<T extends TypeEnv>(env: T, fn: IRFunction): T & Sc
   };
 }
 
-export function typeEnvFor(contract: IRContract, fn: IRFunction): Scope {
-  return functionScope(contractTypeEnv(contract), fn);
+export function typeEnvFor(contract: IRContract, fn: IRFunction, program?: IRProgram): Scope {
+  return functionScope(contractTypeEnv(contract, program), fn);
 }
 
-/** The part of a type environment that does not depend on which function is being looked at. */
-export function contractTypeEnv(contract: IRContract): TypeEnv {
+/**
+ * The part of a type environment that does not depend on which function is
+ * being looked at. With `program`, calls into the build's other contracts and
+ * interfaces are typed too, and so are functions inherited from a base in it.
+ */
+export function contractTypeEnv(contract: IRContract, program?: IRProgram): TypeEnv {
+  const fnReturnTypes = new Map<string, IRType>();
+  const stateVarTypes = new Map<string, IRType>();
+  const byName = new Map((program?.contracts ?? []).map((c) => [c.name, c]));
+  // Bases first, so the contract's own declarations win.
+  const lineage: IRContract[] = [];
+  const seen = new Set<string>();
+  const collect = (c: IRContract): void => {
+    if (seen.has(c.name)) return;
+    seen.add(c.name);
+    for (const b of c.bases) { const base = byName.get(b); if (base) collect(base); }
+    lineage.push(c);
+  };
+  collect(contract);
+  for (const c of lineage) {
+    for (const f of c.functions) if (!f.isConstructor && !f.special) fnReturnTypes.set(f.name, f.returnType);
+    for (const v of c.stateVars) stateVarTypes.set(v.name, v.type);
+  }
+  const externalFns = new Map<string, Map<string, IRType>>();
+  for (const c of program?.contracts ?? []) {
+    externalFns.set(c.name, new Map(c.functions.filter((f) => !f.isConstructor && !f.special).map((f) => [f.name, f.returnType])));
+  }
+  for (const i of program?.interfaces ?? []) externalFns.set(i.name, new Map(i.functions.map((f) => [f.name, f.returnType])));
   return {
-    stateVarTypes: new Map(contract.stateVars.map((v) => [v.name, v.type])),
+    stateVarTypes,
     structs: new Map(contract.structs.map((s) => [s.name, s])),
-    fnReturnTypes: new Map(contract.functions.filter((f) => !f.isConstructor).map((f) => [f.name, f.returnType])),
+    fnReturnTypes,
+    externalFns,
   };
 }
 
@@ -322,7 +468,7 @@ export function isZeroLiteral(expr: IRExpression): boolean {
 }
 
 /** Solidity's explicit conversions: `address(x)`, `uint256(x)`, `bytes32(x)`… -- pure, so safe to evaluate twice. */
-const TYPE_CONVERSION = /^(address|bool|string|bytes\d*|u?int\d*)$/;
+const TYPE_CONVERSION = /^(address|bool|string|bytes\d*|u?int\d*|BigInt|Number|payable)$/;
 
 /**
  * Whether evaluating the expression twice can differ from evaluating it once:

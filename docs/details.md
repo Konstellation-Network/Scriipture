@@ -238,8 +238,13 @@ Every decorator and the Solidity it produces:
 | `@whenNotPaused` | `@whenNotPaused doX(...) { ... }` | `function … whenNotPaused` + `import Pausable` + `is Pausable` |
 | `@invariant` | `@invariant solvent(): boolean { return totalAssets >= totalLiabilities; }` | becomes a Forge `invariant_solvent()` fuzz test **and** an SMTChecker `assert(solvent())` proof obligation, both generated and run during `verify` |
 | `@assembly` | `@assembly add(a: bigint, b: bigint): bigint { return yul\`add(a, b)\` }` | `function … { assembly { add(a, b) } }` — body inlined as Yul |
+| `@modifier` | `@modifier onlyKeeper(): void { require(msg.sender === this.keeper); }` | `modifier onlyKeeper() { require(…); _; }` — see [Solidity side by side](#solidity-side-by-side) |
+| `@<modifierName>` / `@<modifierName>(args)` | `@onlyKeeper @notBefore(7n * days) sweep() { … }` | `function sweep() public onlyKeeper notBefore(7 days)` — applies a modifier declared with `@modifier` in this contract or a base in the build |
+| `@virtual` | `@virtual fee(a: bigint): bigint { … }` | `function fee(…) public virtual …` — only needed for a contract *outside* the build to override it; overrides within the build are inferred |
 | `@unsafe("reason")` | `@unsafe("legacy contract requires tx.origin")` | annotation only — silences the secure-mode footgun check, recorded in the audit pack |
 | `@allowTxOrigin("…")`, `@allowSelfdestruct("…")`, `@allowZeroAddress("…")`, `@allowLowLevelCall("…")` | targeted overrides for specific patterns | bypasses just that one secure-mode rule, with the justification stored in attestation |
+
+A decorator Scriipture does not recognise is an `unknown-decorator` error, on methods and state variables alike. It used to be dropped silently, so a misspelt modifier shipped the function with no access check at all.
 
 Multiple decorators stack:
 
@@ -273,6 +278,9 @@ mint(to: Address, amount: bigint): void {
 | `Bytes` | `bytes` |
 | `Map<K, V>` | `mapping(K => V)` |
 | `Array<T>` | `T[]` (storage) / `T[] memory` (memory) |
+| `FixedArray<T, N>` | `T[N]` |
+| `[bigint, boolean]` (return type) | `returns (uint256, bool)` |
+| a contract class or method-only `interface IFoo` | `IFoo` (the contract type) |
 | `interface Foo { … }` / `type Foo = { … }` (file level) | `struct Foo { … }` declared inside the contract |
 | `enum Foo { A, B }` (file level) | `enum Foo { A, B }` declared inside the contract |
 | `void` | (no return) |
@@ -301,11 +309,14 @@ These are reported at the line you wrote, rather than dropped or passed through 
 | `get x()` / `set x(v)` | Solidity has no accessors; write a method. Dropping them used to remove the only writer of a state variable, after which the optimizer marked it `constant` |
 | `f(a?: T)`, `f(a = 1n)`, `f(...xs)` | Solidity has no optional parameters, default arguments or variadics |
 | `static`, parameter properties | a contract has no static members |
-| `switch`, `do … while`, `try` / `catch`, `for … of` | no equivalent statement; these used to reach solc as TypeScript text |
-| `[1n, 2n]`, `typeof`, `instanceof`, `>>>`, `undefined`, `null`, spreads, arrow functions | no equivalent expression; these used to reach solc as TypeScript text. An empty `[]` is fine: it is how an array state variable is initialised |
+| `switch`, `for … of`, `for … in`, labelled statements | no equivalent statement; these used to reach solc as TypeScript text |
+| `try { … } finally { … }`, or a `try` whose first statement is not an external call | Solidity's `try` wraps exactly one external call or `new` — see [try / catch](#solidity-side-by-side) |
+| `[1n, 2n]` (outside a tuple position), `typeof`, `instanceof`, `>>>`, `undefined`, `null`, spreads, arrow functions (outside `unchecked`) | no equivalent expression; these used to reach solc as TypeScript text. An empty `[]` is fine: it is how an array state variable is initialised |
+| `Math.max(…)`, `JSON`, `Date`, `Object`, … | JavaScript's standard library does not exist on-chain |
+| `throw x` for anything but `new Error("…")` or a declared error | Solidity reverts with a reason string or a custom error, nothing else |
 | `extends` a contract that is not in the build | nothing to import |
 
-`break` and `continue` are supported. A base contract defined in the same build is imported automatically from `./<Name>.sol`.
+`break`, `continue` and `do … while` are supported. A base contract, or any other contract or interface in the same build that a contract names, is imported automatically from `./<Name>.sol`.
 
 ### Strings
 
@@ -414,6 +425,70 @@ payable(safe).transfer(amount);
 
 ---
 
+### Solidity side by side
+
+Every construct below compiles, and is exercised by `tests/solidity-parity.test.ts`. `tests/contracts/Parity.ts` uses most of them in one build. That file type-checks against these typings and is run on the EVM by forge.
+
+**Contracts and inheritance**
+
+| Solidity | TypeScript |
+|---|---|
+| `contract C is B` | `export class C extends B` |
+| `abstract contract B` / `function f() public virtual returns (uint256);` | `export abstract class B` / `abstract f(): bigint;` (mutability from the doc comment: `/** @view */` — TypeScript forbids decorators on abstract methods) |
+| `virtual` / `override` / `override(A, B)` | inferred across the build: `virtual` on a function a derived contract redefines, `override` on the redefinition, the bases listed when several inheritance paths define it. TS `override` forces `override` (for an OpenZeppelin base); `@virtual` forces `virtual` |
+| `interface IFoo { function f(address a) external view returns (uint256); }` | `export interface IFoo { /** @view */ f(a: Address): bigint; }` — a file-level interface of methods only. Emitted to `IFoo.sol` when the build uses it; a TS-only shape nothing refers to is not emitted |
+| `contract C is IFoo` | `class C implements IFoo` |
+| `IFoo(addr).f(a)` | `at<IFoo>(addr).f(a)` — typed, and its result types the local it is assigned to |
+| `Child c = new Child(v);` | `const c = new Child(v);` |
+| enums / structs shared with a base | declared once, in the base; the derived contract uses the inherited ones |
+
+**Functions**
+
+| Solidity | TypeScript |
+|---|---|
+| `receive() external payable { … }` | `receive(): void { … }` |
+| `fallback() external [payable] { … }` | `fallback(): void { … }` (with `@payable` for `payable`) |
+| `modifier onlyKeeper() { require(…); _; }` | `@modifier onlyKeeper(): void { require(…); }` — `_;` is appended; write `_;` yourself to run code after the body. TypeScript needs the applied name in scope: `declare const onlyKeeper: MethodDecorator;` |
+| `function f() … onlyKeeper notBefore(t)` | `@onlyKeeper @notBefore(t) f()` |
+| `function claim(uint256 id) … onlyCreator(id)` | `@onlyCreator(param("id")) claim(id: bigint)` — TypeScript evaluates decorator arguments before any call, so the function's own parameter is named with `param("…")`; a name that is not a parameter is an error |
+| `returns (uint256, bool)` / `return (a, true);` | `f(): [bigint, boolean]` / `return [a, true];` |
+| `(uint256 x, bool ok) = f();` | `const [x, ok] = this.f();` — component types come from `f`'s return type |
+| `(a, b) = (b, a);` | `[a, b] = [b, a];` |
+
+**Errors and control flow**
+
+| Solidity | TypeScript |
+|---|---|
+| `revert TooLow(a, b);` | `revert(this.TooLow(a, b))`, `throw this.TooLow(a, b)` or `throw new TooLow(a, b)` |
+| `revert("reason");` | `throw new Error("reason")` or `revert("reason")` |
+| `assert(x > 0);` | `assert(x > 0n)` |
+| `do { … } while (c);` | `do { … } while (c);` |
+| `unchecked { … }` | `unchecked(() => { … })` |
+| `try IFoo(t).f() returns (uint256 r) { … } catch { … }` | `try { const r = at<IFoo>(t).f(); … } catch { … }` — the first statement is the call being tried; `return at<IFoo>(t).f()` works too |
+| `catch (bytes memory reason) { … }` | `catch (reason) { … }` |
+| `emit Transfer(a, b, v);` | `emit(this.Transfer(a, b, v))` |
+
+**Values and conversions**
+
+| Solidity | TypeScript |
+|---|---|
+| `uint8(x)` | `x as Uint8` — written only when `x` is known to be a different type, so `(votes + 1n) as Uint64` stays `votes + 1` |
+| `uint256(e)` for an enum or narrower int | `BigInt(e)` |
+| `type(uint64).max`, `type(IFoo).interfaceId` | `type<Uint64>().max`, `type<IFoo>().interfaceId` |
+| `1 ether`, `7 days` | `1n * ether`, `7n * days` (`wei`, `gwei`, `ether`, `seconds`, `minutes`, `hours`, `days`, `weeks`) |
+| `bytes4 s = 0xa9059cbb;` | `"0xa9059cbb" as Bytes4` (exactly 2·N hex digits) |
+| `hex"deadbeef"` | `"0xdeadbeef" as Bytes` |
+| `new uint256[](n)` | `new Array<bigint>(n)` |
+| `address(this)` | `address(this)` |
+| `a.balance`, `a.code.length`, `a.codehash` | the same |
+| `to.call{value: v}(data)` | `to.call({ value: v }, data)` |
+| `abi.decode(data, (address, uint256))` | `abi.decode<[Address, bigint]>(data)` |
+| `msg.sig`, `tx.gasprice`, `block.basefee`, `block.prevrandao`, `gasleft()`, `blockhash(n)` | the same |
+
+Locals whose type is not written are typed from their initializer. That covers `keccak256` (`bytes32`), comparisons (`bool`), `abi.encode` (`bytes memory`), calls into other contracts and interfaces in the build, and `new`. Previously anything unknown fell back to `uint256`.
+
+**Not yet supported**, and reported rather than miscompiled where they can be written at all: libraries and `using … for`, free (file-level) functions and constants, function types, user-defined value types (`type Price is uint128`), overloading, named return values, `new C{salt: s, value: v}(…)` (CREATE2 / funded creation), `catch Error(string)` / `catch Panic(uint256)` clauses, `anonymous` events, `transient` storage, and structs in an interface's signatures.
+
 ## 7. Commands
 
 All commands accept `--help`:
@@ -448,7 +523,7 @@ The `pack-slots` pass is **advisory**: it reports how many storage slots you wou
 
 ### `validate <input>`
 
-Static checks (26 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
+Static checks (27 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
@@ -580,7 +655,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 26 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 27 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | native `solc` **built with a Horn solver** | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. See [Getting a solc that can actually run it](#smt-solver) — without one the gate is recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
@@ -748,6 +823,9 @@ The standard JSON input that solc produced during `compile` — exactly the same
 
 ## 12. Plugins
 
+A plugin that gives meaning to its own decorators lists them in `decorators: ["audited", …]`; otherwise the `unknown-decorator` rule reports them, since Scriipture would drop them from the emitted Solidity.
+
+
 A plugin can register additional optimizer passes and validator rules:
 
 ```ts
@@ -817,7 +895,7 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Compile | solc | hardhat compile | forge build | **scriipture compile** |
 | Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
-| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 26 native rules) |
+| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 27 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
 | Deploy | ethers/viem script | hardhat-deploy | cast/forge | **browser-wallet first-class** |
 | Source verification | manual upload to BaseScan | hardhat-verify plugin | forge verify-contract | **auto on every deploy** |

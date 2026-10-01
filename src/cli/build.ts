@@ -61,8 +61,12 @@ export async function buildCommand(input: string, opts: BuildOptions): Promise<v
     for (const c of unoptEmitted) {
       const out = path.join(outDir, `${c.name}.sol`);
       fs.writeFileSync(out, c.solidity, "utf8");
-      const sm = buildSourceMap(program.contracts.find((p) => p.name === c.name)!, c.solidity);
-      fs.writeFileSync(path.join(outDir, `${c.name}.sourcemap.json`), JSON.stringify(sm, null, 2));
+      // An interface has no function bodies, so nothing to map back to TypeScript lines.
+      const contract = program.contracts.find((p) => p.name === c.name);
+      if (contract) {
+        const sm = buildSourceMap(contract, c.solidity);
+        fs.writeFileSync(path.join(outDir, `${c.name}.sourcemap.json`), JSON.stringify(sm, null, 2));
+      }
       console.log(pc.green(`wrote ${out}`) + pc.dim(" (no-optimize)"));
     }
     return;
@@ -79,6 +83,10 @@ export async function buildCommand(input: string, opts: BuildOptions): Promise<v
   for (const c of optEmitted) {
     const out = path.join(outDir, `${c.name}.sol`);
     fs.writeFileSync(out, c.solidity, "utf8");
+    if (c.kind === "interface") {
+      console.log(pc.green(`wrote ${out}`) + pc.dim(" (interface)"));
+      continue;
+    }
 
     const sm = buildSourceMap(program.contracts.find((p) => p.name === c.name)!, c.solidity);
     fs.writeFileSync(path.join(outDir, `${c.name}.sourcemap.json`), JSON.stringify(sm, null, 2));

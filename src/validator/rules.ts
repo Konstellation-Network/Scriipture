@@ -6,12 +6,14 @@ import type {
   IRStatement,
   SourceLocation,
 } from "../ir/types";
-import { resolveContract, standardImportFor } from "../mapper/decorators";
+import { FUNCTION_DECORATORS, SAFETY_OVERRIDE_DECORATORS, resolveContract, standardImportFor } from "../mapper/decorators";
+import { paramReference, userModifierNames } from "../emitter/emit";
+import { ancestorsOf } from "../mapper/lineage";
 import type { Diagnostic } from "./diagnostics";
-import { getPluginValidatorRules } from "../plugin/api";
+import { getPluginDecorators, getPluginValidatorRules } from "../plugin/api";
 import { isSolidityReserved } from "./reserved";
 import { walkStatements, walkExpressionsInStatement, walkExpr } from "../optimizer/walk";
-import { emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, mixesStorageAndMemory, typeEnvFor, walkScoped } from "../mapper/infer";
+import { destructureShapeKnown, emptinessTest, hasSideEffects, inferType, isLowLevelCall, isZeroLiteral, mixesStorageAndMemory, typeEnvFor, walkScoped } from "../mapper/infer";
 
 /**
  * Every `rule` identifier the native validator can emit. Not every one is an
@@ -45,10 +47,11 @@ export const RULE_IDS = [
   "undeclared-error",
   "undeclared-event",
   "unknown-base-contract",
+  "unknown-decorator",
   "view-no-mutate",
 ] as const;
 
-type Rule = (contract: IRContract, fn: IRFunction) => Diagnostic[];
+type Rule = (contract: IRContract, fn: IRFunction, program?: IRProgram) => Diagnostic[];
 
 export interface ValidateOptions {
   secure?: boolean;
@@ -57,8 +60,20 @@ export interface ValidateOptions {
 export function validateProgram(program: IRProgram, opts: ValidateOptions = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
   const known = new Set(program.contracts.map((c) => c.name));
+  const interfaces = new Set((program.interfaces ?? []).map((i) => i.name));
   for (const contract of program.contracts) {
-    out.push(...validateContract(contract, opts));
+    out.push(...validateContract(contract, opts, program));
+    out.push(...ruleUnknownDecorators(contract, program));
+    for (const iface of contract.interfaces ?? []) {
+      if (interfaces.has(iface)) continue;
+      out.push({
+        rule: "unknown-base-contract",
+        severity: "error",
+        message: `"${contract.name}" implements "${iface}", which is not an interface in this build (a file-level TS interface whose members are all methods)`,
+        loc: contract.loc,
+        fix: `declare \`interface ${iface} { … }\` with method signatures in a file passed to this build`,
+      });
+    }
     // Needs the whole program, so it cannot live in validateContract.
     for (const base of contract.bases) {
       if (standardImportFor(base) || known.has(base)) continue;
@@ -113,13 +128,65 @@ function functionHasAllowFor(fn: { decorators: { name: string }[] }, rule: strin
   return fn.decorators.some((d) => d.name === allow || d.name === "unsafe");
 }
 
-export function validateContract(contract: IRContract, opts: ValidateOptions = {}): Diagnostic[] {
+/** Decorators that mean something on a method, beyond the ones in the modifier table. */
+const METHOD_DECORATORS = new Set([
+  ...Object.keys(FUNCTION_DECORATORS),
+  ...SAFETY_OVERRIDE_DECORATORS,
+  "solidity", "assembly", "event", "error", "invariant", "throws", "modifier", "virtual",
+]);
+
+/** Decorators that mean something on a state variable. */
+const FIELD_DECORATORS = new Set(["storage", "public", "private", "internal"]);
+
+/**
+ * A decorator nothing recognises used to vanish: `@onlyAdmin` on a function
+ * with no `@modifier onlyAdmin` shipped the function with no access check at
+ * all, and `@private_` on a field shipped it `public`. Every decorator must be
+ * one Scriipture lowers, a modifier this contract or a base declares, or one
+ * a plugin claims.
+ */
+function ruleUnknownDecorators(contract: IRContract, program: IRProgram): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const modifiers = userModifierNames(contract, program);
+  const fromPlugins = new Set(getPluginDecorators());
+  const report = (name: string, where: string, loc: SourceLocation | undefined, fix: string): void => {
+    out.push({ rule: "unknown-decorator", severity: "error", message: `@${name} on ${where} is not a decorator Scriipture knows, so it would be dropped from the emitted Solidity`, loc, fix });
+  };
+  for (const fn of contract.functions) {
+    for (const d of fn.decorators) {
+      // `@onlyCreator(param("id"))` must name one of this function's parameters.
+      for (const a of d.args) {
+        const ref = paramReference(a);
+        if (ref !== undefined && !fn.params.some((p) => p.name === ref)) {
+          out.push({
+            rule: "unknown-decorator",
+            severity: "error",
+            message: `@${d.name}(param("${ref}")) on function "${fn.name}": "${ref}" is not one of its parameters`,
+            loc: fn.loc,
+            fix: `use one of: ${fn.params.map((p) => `param("${p.name}")`).join(", ") || "(the function has no parameters)"}`,
+          });
+        }
+      }
+      if (METHOD_DECORATORS.has(d.name) || modifiers.has(d.name) || fromPlugins.has(d.name)) continue;
+      report(d.name, `function "${fn.name}"`, fn.loc, `if it is a modifier, declare it: \`@modifier ${d.name}(): void { require(…); }\``);
+    }
+  }
+  for (const v of contract.stateVars) {
+    for (const d of v.decorators) {
+      if (FIELD_DECORATORS.has(d.name) || fromPlugins.has(d.name)) continue;
+      report(d.name, `state variable "${v.name}"`, v.loc, "a state variable takes @storage and a visibility (@public_, @internal, @private_) only");
+    }
+  }
+  return out;
+}
+
+export function validateContract(contract: IRContract, opts: ValidateOptions = {}, program?: IRProgram): Diagnostic[] {
   const out: Diagnostic[] = [];
   const resolution = resolveContract(contract);
 
   for (const fn of contract.functions) {
     for (const rule of RULES) {
-      const found = rule(contract, fn);
+      const found = rule(contract, fn, program);
       for (const d of found) {
         if (functionHasAllowFor(fn, d.rule)) continue;
         out.push(d);
@@ -142,8 +209,8 @@ export function validateContract(contract: IRContract, opts: ValidateOptions = {
   }
 
   out.push(...ruleReservedIdentifiers(contract));
-  out.push(...ruleEventDeclarations(contract));
-  out.push(...ruleUndeclaredError(contract));
+  out.push(...ruleEventDeclarations(contract, program));
+  out.push(...ruleUndeclaredError(contract, program));
 
   for (const plugin of getPluginValidatorRules()) {
     for (const d of plugin.run(contract)) {
@@ -183,7 +250,8 @@ function ruleReservedIdentifiers(contract: IRContract): Diagnostic[] {
   }
 
   for (const fn of contract.functions) {
-    if (!fn.isConstructor && isSolidityReserved(fn.name)) {
+    // `receive` and `fallback` are reserved precisely because they name these special functions.
+    if (!fn.isConstructor && !(fn.special === "receive" || fn.special === "fallback") && isSolidityReserved(fn.name)) {
       out.push(reservedDiagnostic(fn.name, `function "${fn.name}"`, fn.loc));
     }
     // IRParam carries no loc, so these report against the function.
@@ -212,7 +280,7 @@ function ruleReservedIdentifiers(contract: IRContract): Diagnostic[] {
  * `emit` of a name that was never declared cannot compile. Both are caught here
  * so they report against the .ts source rather than generated Solidity.
  */
-function ruleEventDeclarations(contract: IRContract): Diagnostic[] {
+function ruleEventDeclarations(contract: IRContract, program?: IRProgram): Diagnostic[] {
   const out: Diagnostic[] = [];
 
   for (const ev of contract.events) {
@@ -228,7 +296,8 @@ function ruleEventDeclarations(contract: IRContract): Diagnostic[] {
     }
   }
 
-  const declared = new Set(contract.events.map((e) => e.name));
+  // A base's events are the derived contract's too.
+  const declared = new Set([contract, ...ancestorsOf(contract, program)].flatMap((c) => c.events.map((e) => e.name)));
   for (const fn of contract.functions) {
     walkStatements(fn.body, (stmt) => {
       if (stmt.kind === "emit" && !declared.has(stmt.eventName)) {
@@ -251,9 +320,9 @@ function ruleEventDeclarations(contract: IRContract): Diagnostic[] {
  * Errors synthesized by the custom-errors optimizer pass are not visible here,
  * but those are generated from requires and always declared alongside.
  */
-function ruleUndeclaredError(contract: IRContract): Diagnostic[] {
+function ruleUndeclaredError(contract: IRContract, program?: IRProgram): Diagnostic[] {
   const out: Diagnostic[] = [];
-  const declared = new Set(contract.errors.map((e) => e.name));
+  const declared = new Set([contract, ...ancestorsOf(contract, program)].flatMap((c) => c.errors.map((e) => e.name)));
 
   for (const fn of contract.functions) {
     walkStatements(fn.body, (stmt) => {
@@ -367,11 +436,10 @@ function ruleStorageAlias(contract: IRContract, fn: IRFunction): Diagnostic[] {
  * calls (`(bool, bytes memory)`) and for a tuple annotation; anything else
  * cannot be emitted correctly.
  */
-function ruleDestructureShape(_contract: IRContract, fn: IRFunction): Diagnostic[] {
+function ruleDestructureShape(contract: IRContract, fn: IRFunction, program?: IRProgram): Diagnostic[] {
   const out: Diagnostic[] = [];
-  walkStatements(fn.body, (stmt) => {
+  walkScoped(fn.body, typeEnvFor(contract, fn, program), (stmt, scope) => {
     if (stmt.kind !== "destructure") return;
-    if (stmt.types && stmt.types.length >= stmt.names.length) return;
     if (isLowLevelCall(stmt.init)) {
       if (stmt.names.length > 2) {
         out.push({
@@ -383,6 +451,7 @@ function ruleDestructureShape(_contract: IRContract, fn: IRFunction): Diagnostic
       }
       return;
     }
+    if (destructureShapeKnown(stmt, scope)) return;
     out.push({
       rule: "destructure-shape",
       severity: "error",

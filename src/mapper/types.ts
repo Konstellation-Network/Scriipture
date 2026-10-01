@@ -29,7 +29,7 @@ export function solidityType(type: IRType, location: "storage" | "memory" | "cal
     case "mapping":
       return `mapping(${solidityType(type.key)} => ${solidityType(type.value)})`;
     case "array": {
-      const base = `${solidityType(type.element)}[]`;
+      const base = `${solidityType(type.element)}[${type.length ?? ""}]`;
       if (location !== "storage") return `${base} ${location}`;
       return base;
     }
@@ -38,9 +38,19 @@ export function solidityType(type: IRType, location: "storage" | "memory" | "cal
       return location === "storage" ? type.name : `${type.name} ${location}`;
     case "enum":
       return type.name;
+    case "tuple":
+      // Only meaningful in a `returns (…)` list or a tuple declaration; each part takes the location.
+      return type.elements.map((t) => solidityType(t, location)).join(", ");
     case "custom":
       return CUSTOM_TYPE_ALIASES[type.name] ?? type.name;
   }
+}
+
+/** Structural equality of two types, looking through `Address` / `CheckedAddress` / `Bytes32` aliases. */
+export function sameType(a: IRType | undefined, b: IRType | undefined): boolean {
+  if (!a || !b) return false;
+  const norm = (t: IRType): IRType => (t.kind === "custom" ? aliasedPrimitive(t.name) ?? t : t);
+  return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 }
 
 export function isValueType(type: IRType): boolean {

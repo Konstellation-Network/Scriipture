@@ -1,13 +1,18 @@
 import type { IRContract, IRErrorDecl, IRExpression, IRStatement } from "../ir/types";
-import type { OptimizationChange } from "./passes";
+import type { OptimizationChange, OptimizeOptions } from "./passes";
 import { walkStatementArrays } from "./walk";
 
-export function customErrors(contract: IRContract): OptimizationChange[] {
+export function customErrors(contract: IRContract, options: OptimizeOptions = {}): OptimizationChange[] {
   const changes: OptimizationChange[] = [];
   const errorByMsg = new Map<string, IRErrorDecl>();
   // Errors the user declared with @error. A synthesized name that collides with
   // one would emit a duplicate declaration, so those requires are left alone.
   const userDeclared = new Set(contract.errors.map((e) => e.name));
+  // Errors a base in the build declares (by hand or by this pass) are visible
+  // here. A parameterless one is reused as is; declaring it again would be
+  // "Identifier already declared", and one with parameters cannot be reverted
+  // bare, so that require is left alone.
+  const inherited = options.inheritedErrors ?? new Map<string, number>();
 
   for (const fn of contract.functions) {
     if (fn.isAssembly) continue;
@@ -24,7 +29,9 @@ export function customErrors(contract: IRContract): OptimizationChange[] {
 
         const errorName = errorNameFromMessage(message.value);
         if (userDeclared.has(errorName)) continue;
-        if (!errorByMsg.has(errorName)) {
+        const inheritedArity = inherited.get(errorName);
+        if (inheritedArity !== undefined && inheritedArity > 0) continue;
+        if (inheritedArity === undefined && !errorByMsg.has(errorName)) {
           const decl: IRErrorDecl = { name: errorName, params: [] };
           errorByMsg.set(errorName, decl);
           contract.errors.push(decl);

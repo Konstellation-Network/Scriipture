@@ -11,6 +11,7 @@ export function storageBitSize(type: IRType): number {
   switch (type.kind) {
     case "mapping":
     case "array":
+    case "tuple": // never a state variable's type; a full slot keeps the switch total
       return SLOT_SIZE_BITS;
     case "primitive": {
       if (type.name === "bool") return 8;

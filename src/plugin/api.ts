@@ -16,6 +16,12 @@ export interface ScriipturePlugin {
   name: string;
   optimizerPasses?: PluginOptimizerPass[];
   validatorRules?: PluginValidatorRule[];
+  /**
+   * Decorator names this plugin gives meaning to. Any other decorator
+   * Scriipture does not know is an `unknown-decorator` error, since it would
+   * otherwise vanish from the emitted Solidity.
+   */
+  decorators?: string[];
 }
 
 export interface PluginRegistry {
@@ -38,4 +44,8 @@ export function getPluginOptimizerPasses(): PluginOptimizerPass[] {
 
 export function getPluginValidatorRules(): PluginValidatorRule[] {
   return _registry.plugins.flatMap((p) => p.validatorRules ?? []);
+}
+
+export function getPluginDecorators(): string[] {
+  return _registry.plugins.flatMap((p) => p.decorators ?? []);
 }

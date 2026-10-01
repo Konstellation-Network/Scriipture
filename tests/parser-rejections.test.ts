@@ -46,8 +46,12 @@ describe("constructs the transpiler cannot lower are reported, not dropped", () 
 
   it("reports statements that would otherwise be emitted as TypeScript text", () => {
     expect(messages().some((m) => m.includes("`switch` statement"))).toBe(true);
-    expect(messages().some((m) => m.includes("`do … while` loop"))).toBe(true);
-    expect(messages().some((m) => m.includes("`try` / `catch` block"))).toBe(true);
+    // Solidity's `try` wraps one external call; a block of ordinary statements has no counterpart.
+    expect(messages().some((m) => m.includes("first statement of a `try` block must be the external call"))).toBe(true);
+  });
+
+  it("does not reject `do … while`, which Solidity has", () => {
+    expect(messages().some((m) => m.includes("do …"))).toBe(false);
   });
 
   it("reports a static member", () => {

@@ -27,11 +27,14 @@ export type IRPrimitiveName =
 export type IRType =
   | { kind: "primitive"; name: IRPrimitiveName }
   | { kind: "mapping"; key: IRType; value: IRType }
-  | { kind: "array"; element: IRType }
+  /** `T[]`, or `T[N]` when `length` is set (`FixedArray<T, N>`). */
+  | { kind: "array"; element: IRType; length?: number }
   /** A struct declared at file level next to the contract (TS `interface` or object `type`). */
   | { kind: "struct"; name: string }
   /** An enum declared at file level next to the contract (TS `enum`). */
   | { kind: "enum"; name: string }
+  /** Several return values: a TS tuple return type `[bigint, boolean]` → `returns (uint256, bool)`. */
+  | { kind: "tuple"; elements: IRType[] }
   | { kind: "custom"; name: string };
 
 export type IRExpression =
@@ -41,8 +44,29 @@ export type IRExpression =
   | { kind: "super" }
   | { kind: "member"; object: IRExpression; property: string }
   | { kind: "index"; object: IRExpression; index: IRExpression }
-  | { kind: "call"; callee: IRExpression; args: IRExpression[] }
-  | { kind: "new"; className: string; args: IRExpression[] }
+  /**
+   * `options` is Solidity's call-options block: `to.call({ value: v }, data)`
+   * → `to.call{value: v}(data)`. `typeArgs` carries TS type arguments the
+   * lowering needs, e.g. `abi.decode<[bigint, Address]>(data)`.
+   */
+  | {
+      kind: "call";
+      callee: IRExpression;
+      args: IRExpression[];
+      options?: Array<{ name: string; value: IRExpression }>;
+      typeArgs?: IRType[];
+      /**
+       * A TS `x as Uint8`: `callee` names the Solidity type and `typeArgs[0]`
+       * is the target. The emitter writes `uint8(x)` only when `x` is known to
+       * have a different type, so a cast TS needed and Solidity does not
+       * leaves no trace.
+       */
+      cast?: boolean;
+    }
+  /** `new Child(v)`; `type` is set for `new Array<T>(n)` → `new T[](n)`. */
+  | { kind: "new"; className: string; args: IRExpression[]; type?: IRType; options?: Array<{ name: string; value: IRExpression }> }
+  /** `(a, b)`: a tuple return value, or either side of a tuple assignment `[a, b] = [b, a]`. */
+  | { kind: "tuple"; elements: Array<IRExpression | undefined> }
   | { kind: "binary"; op: string; left: IRExpression; right: IRExpression }
   | { kind: "unary"; op: string; operand: IRExpression; prefix: boolean }
   | { kind: "conditional"; test: IRExpression; consequent: IRExpression; alternate: IRExpression }
@@ -63,7 +87,8 @@ export type IRStatement =
   | { kind: "return"; value?: IRExpression; loc?: SourceLocation }
   | { kind: "if"; test: IRExpression; then: IRStatement[]; else?: IRStatement[]; loc?: SourceLocation }
   | { kind: "for"; init?: IRStatement; test?: IRExpression; update?: IRExpression; body: IRStatement[]; uncheckedIncrement?: boolean; loc?: SourceLocation }
-  | { kind: "while"; test: IRExpression; body: IRStatement[]; loc?: SourceLocation }
+  /** `doWhile` is `do { … } while (test);` -- the body runs before the first test. */
+  | { kind: "while"; test: IRExpression; body: IRStatement[]; doWhile?: boolean; loc?: SourceLocation }
   | { kind: "block"; body: IRStatement[]; loc?: SourceLocation }
   | { kind: "unchecked"; body: IRStatement[]; loc?: SourceLocation }
   | { kind: "revert"; errorName: string; args: IRExpression[]; loc?: SourceLocation }
@@ -79,7 +104,23 @@ export type IRStatement =
   | { kind: "throw"; argument: IRExpression; loc?: SourceLocation }
   | { kind: "break"; loc?: SourceLocation }
   | { kind: "continue"; loc?: SourceLocation }
+  /**
+   * Solidity's `try` on an external call or `new`:
+   * `try call returns (T r) { body } catch Error(string memory reason) { … } catch { … }`.
+   * `returns` names what the successful call yields (empty when unused).
+   */
+  | { kind: "try"; call: IRExpression; returns: IRParam[]; body: IRStatement[]; catches: IRCatchClause[]; loc?: SourceLocation }
   | { kind: "raw"; text: string; loc?: SourceLocation };
+
+/**
+ * One `catch` of a `try`. `kind` picks the clause: `Error(string memory reason)`,
+ * `Panic(uint256 code)`, the low-level `(bytes memory data)`, or a bare `catch`.
+ */
+export interface IRCatchClause {
+  kind: "error" | "panic" | "bytes" | "any";
+  param?: string;
+  body: IRStatement[];
+}
 
 export interface IRParam {
   name: string;
@@ -145,6 +186,16 @@ export interface IREnumDecl {
 export interface IRFunction {
   name: string;
   isConstructor: boolean;
+  /**
+   * A function Solidity treats specially: `receive() external payable`,
+   * `fallback() external`, or a `modifier` (declared with `@modifier`).
+   * Undefined for an ordinary function.
+   */
+  special?: "receive" | "fallback" | "modifier";
+  /** Declared without a body (`abstract f(): T;`): emitted `virtual` with no body. */
+  isAbstract?: boolean;
+  /** Written with TS `override`: always emitted `override`, even over a base Scriipture cannot see. */
+  isOverride?: boolean;
   decorators: IRDecorator[];
   params: IRParam[];
   returnType: IRType;
@@ -158,7 +209,11 @@ export interface IRFunction {
 
 export interface IRContract {
   name: string;
+  /** `abstract class` → `abstract contract`. */
+  isAbstract?: boolean;
   bases: string[];
+  /** `implements IFoo` → `is IFoo`; each must be an interface declared in this build. */
+  interfaces?: string[];
   stateVars: IRStateVar[];
   functions: IRFunction[];
   errors: IRErrorDecl[];
@@ -170,6 +225,22 @@ export interface IRContract {
   loc?: SourceLocation;
 }
 
+/**
+ * A file-level TS `interface` whose members are all methods. It becomes a
+ * Solidity `interface` in its own `<Name>.sol`, imported by every contract
+ * that names it -- by `at<IFoo>(addr)`, by type, or by `implements`.
+ */
+export interface IRInterface {
+  name: string;
+  functions: IRFunction[];
+  events: IREventDecl[];
+  sourceFile: string;
+  natspec?: string[];
+  loc?: SourceLocation;
+}
+
 export interface IRProgram {
   contracts: IRContract[];
+  /** Solidity interfaces declared in this build; each is emitted to its own file. */
+  interfaces?: IRInterface[];
 }

@@ -1,7 +1,7 @@
-import type { IRStatement } from "../ir/types";
+import type { IRParam, IRStatement, IRType } from "../ir/types";
 import { solidityType } from "./types";
 import { emitExpression, type EmitContext } from "./expressions";
-import { declareLocal, destructureTypes, enterScope, localDeclaration } from "./infer";
+import { declareLocal, destructureTypes, enterScope, inferType, localDeclaration } from "./infer";
 
 /**
  * Emit a block. Each statement is emitted in the scope of the locals declared
@@ -68,11 +68,19 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return [`${indent}emit ${stmt.eventName}(${stmt.args.map((a) => emitExpression(a, ctx)).join(", ")});`];
     case "while": {
       const lines: string[] = [];
+      if (stmt.doWhile) {
+        lines.push(`${indent}do {`);
+        lines.push(...emitStatements(stmt.body, ctx, indent + "    "));
+        lines.push(`${indent}} while (${emitExpression(stmt.test, ctx)});`);
+        return lines;
+      }
       lines.push(`${indent}while (${emitExpression(stmt.test, ctx)}) {`);
       lines.push(...emitStatements(stmt.body, ctx, indent + "    "));
       lines.push(`${indent}}`);
       return lines;
     }
+    case "try":
+      return emitTry(stmt, ctx, indent);
     case "block": {
       const lines: string[] = [];
       lines.push(`${indent}{`);
@@ -92,7 +100,7 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return [`${indent}${typeStr} ${stmt.name}${initStr};`];
     }
     case "destructure": {
-      const types = destructureTypes(stmt);
+      const types = destructureTypes(stmt, ctx);
       const parts = types.map((t, i) => {
         const name = stmt.names[i];
         return name ? `${solidityType(t, "memory")} ${name}` : "";
@@ -110,6 +118,43 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
   }
 }
 
+
+/**
+ * The `returns (…)` of a `try`: annotated types where written, otherwise what
+ * the tried call is known to return. The success block sees these names.
+ */
+function tryReturns(stmt: Extract<IRStatement, { kind: "try" }>, ctx: EmitContext): IRParam[] {
+  const inferred = inferType(stmt.call, ctx);
+  const parts: Array<IRType | undefined> = inferred?.kind === "tuple" ? inferred.elements : [inferred];
+  return stmt.returns.map((r, i) => {
+    const known = !(r.type.kind === "custom" && r.type.name === "unknown");
+    return { ...r, type: known ? r.type : parts[i] ?? r.type };
+  });
+}
+
+function emitTry(stmt: Extract<IRStatement, { kind: "try" }>, ctx: EmitContext, indent: string): string[] {
+  const returns = tryReturns(stmt, ctx);
+  const success = enterScope(ctx);
+  for (const r of returns) if (r.name) success.localTypes.set(r.name, r.type);
+  const returnsStr = returns.length > 0
+    ? ` returns (${returns.map((r) => `${solidityType(r.type, "memory")}${r.name ? ` ${r.name}` : ""}`).join(", ")})`
+    : "";
+  const lines = [`${indent}try ${emitExpression(stmt.call, ctx)}${returnsStr} {`];
+  lines.push(...emitStatements(stmt.body, success, indent + "    "));
+  for (const c of stmt.catches) {
+    const scope = enterScope(ctx);
+    let head: string;
+    if (c.kind === "error") head = `catch Error(string memory ${c.param ?? "reason"})`;
+    else if (c.kind === "panic") head = `catch Panic(uint256 ${c.param ?? "code"})`;
+    else if (c.kind === "bytes") head = `catch (bytes memory ${c.param ?? "data"})`;
+    else head = "catch";
+    if (c.param) scope.localTypes.set(c.param, c.kind === "error" ? { kind: "primitive", name: "string" } : c.kind === "panic" ? { kind: "primitive", name: "uint256" } : { kind: "primitive", name: "bytes" });
+    lines.push(`${indent}} ${head} {`);
+    lines.push(...emitStatements(c.body, scope, indent + "    "));
+  }
+  lines.push(`${indent}}`);
+  return lines;
+}
 
 function emitForInit(init: IRStatement, ctx: EmitContext): string {
   if (init.kind === "let") {

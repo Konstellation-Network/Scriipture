@@ -12,8 +12,10 @@ export function generateFuzzHarness(contract: IRContract): FuzzHarness | null {
   const ctor = contract.functions.find((f) => f.isConstructor);
   if (ctor && ctor.params.length > 0) return null;
 
+  // An abstract contract cannot be deployed into a harness at all.
+  if (contract.isAbstract) return null;
   const publicFns = contract.functions.filter((fn) =>
-    !fn.isConstructor && !fn.isAssembly &&
+    !fn.isConstructor && !fn.isAssembly && !fn.special && !fn.isAbstract &&
     !fn.decorators.some((d) => d.name === "internal" || d.name === "private"),
   );
 

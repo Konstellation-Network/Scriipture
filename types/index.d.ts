@@ -1,5 +1,27 @@
 declare module "scriipture" {
-  export type Address = string & { readonly __brand: "Address" };
+  /** What Solidity lets you read off an `address`. */
+  export interface AddressMembers {
+    /** Wei held by the account. */
+    readonly balance: bigint;
+    /** Deployed code (empty for an EOA): `a.code.length > 0n` tests for a contract. */
+    readonly code: Bytes;
+    readonly codehash: Bytes32;
+    /**
+     * Low-level call: `const [ok, data] = a.call({ value: v }, payload)` →
+     * `(bool ok, bytes memory data) = a.call{value: v}(payload);`.
+     * Check `ok`: an unchecked result is a `no-unchecked-low-level-call` finding.
+     */
+    call(options: { value?: bigint; gas?: bigint }, data: Bytes | string): [boolean, Bytes];
+    call(data: Bytes | string): [boolean, Bytes];
+    staticcall(data: Bytes | string): [boolean, Bytes];
+    delegatecall(data: Bytes | string): [boolean, Bytes];
+  }
+  /** An address that can receive ether: what `payable(a)` returns. */
+  export interface PayableAddress extends AddressMembers {
+    transfer(amount: bigint): void;
+    send(amount: bigint): boolean;
+  }
+  export type Address = string & AddressMembers & { readonly __brand: "Address" };
   export type CheckedAddress = Address & { readonly __checked: true };
   export type Bytes32 = string & { readonly __brand: "Bytes32" };
   export type Bytes = string & { readonly __brand: "Bytes" };
@@ -109,7 +131,9 @@ declare module "scriipture" {
   export const msg: {
     sender: CheckedAddress;
     value: bigint;
-    data: string;
+    data: Bytes;
+    /** The first four bytes of calldata: the function selector. */
+    sig: Bytes4;
   };
 
   export const block: {
@@ -117,14 +141,99 @@ declare module "scriipture" {
     number: bigint;
     coinbase: Address;
     chainid: bigint;
+    basefee: bigint;
+    blobbasefee: bigint;
+    prevrandao: bigint;
+    gaslimit: bigint;
   };
+
+  export const tx: {
+    /** The EOA that started the transaction. Never use it for authorization: the `no-tx-origin` rule flags it. */
+    origin: Address;
+    gasprice: bigint;
+  };
+
+  /** Ether and time units. `2n * ether` emits `2 ether`; `7n * days` emits `7 days`. */
+  export const wei: bigint;
+  export const gwei: bigint;
+  export const ether: bigint;
+  export const seconds: bigint;
+  export const minutes: bigint;
+  export const hours: bigint;
+  export const days: bigint;
+  export const weeks: bigint;
+
+  /** `address(this)` is the contract's own address; `address(0n)` the zero address. */
+  export function address(value: object | bigint | Bytes): Address;
+  /**
+   * The contract or interface at an address, typed: `at<IERC20>(token).transfer(to, v)`
+   * → `IERC20(token).transfer(to, v)`. `IERC20` is a file-level TS interface
+   * (or a contract class) in the same build.
+   */
+  export function at<T>(addr: Address): T;
+  /**
+   * Solidity's `type(T)`: `type<Uint64>().max` → `type(uint64).max`,
+   * `type<IERC20>().interfaceId` → `type(IERC20).interfaceId`.
+   */
+  export function type<T>(): {
+    readonly max: T;
+    readonly min: T;
+    readonly interfaceId: Bytes4;
+    readonly name: string;
+    readonly creationCode: Bytes;
+    readonly runtimeCode: Bytes;
+  };
+
+  /** Remaining gas. */
+  export function gasleft(): bigint;
+  /** Hash of one of the 256 most recent blocks, else zero. */
+  export function blockhash(blockNumber: bigint): Bytes32;
+  /** Panics (0x01) when false. For invariants that must never fail; use `require` for input checks. */
+  export function assert(condition: boolean): void;
+  export function addmod(x: bigint, y: bigint, k: bigint): bigint;
+  export function mulmod(x: bigint, y: bigint, k: bigint): bigint;
+  export function ripemd160(data: Bytes): Bytes;
+
+  /**
+   * Solidity's `unchecked { … }`: arithmetic inside wraps instead of reverting.
+   * `unchecked(() => { i = i + 1n; })`. Only when overflow is provably impossible.
+   */
+  export function unchecked(block: () => void): void;
+
+  /**
+   * A fixed-size array: `FixedArray<bigint, 3>` → `uint256[3]`.
+   */
+  export type FixedArray<T, N extends number> = T[] & { readonly length: N };
 
   export function validate(addr: Address): CheckedAddress;
 
   export function storage(...args: any[]): any;
   export function view(...args: any[]): any;
   export function pure(...args: any[]): any;
-  export function payable(...args: any[]): any;
+  /** On a method: `payable`. On an address: `payable(a)`, which can receive ether. */
+  export function payable(a: Address): PayableAddress;
+  export function payable(target: object, key: string | symbol, descriptor?: PropertyDescriptor): any;
+  /**
+   * Declares a Solidity `modifier`. Apply it with a decorator of the same name:
+   *
+   *   @modifier onlyAdmin(): void { require(msg.sender === this.admin); }
+   *   @onlyAdmin setFee(f: bigint): void { … }
+   *
+   * The wrapped function runs at `_;`, or after the body when `_` is not written.
+   * TypeScript needs the applied name in scope: `declare const onlyAdmin: MethodDecorator;`
+   * (or `(x: bigint) => MethodDecorator` for a modifier with arguments).
+   */
+  export function modifier(...args: any[]): any;
+  /**
+   * Passes one of the decorated function's own parameters to a modifier:
+   * `@onlyCreator(param("id")) claim(id: bigint)` → `function claim(uint256 id) … onlyCreator(id)`.
+   * Needed because TypeScript evaluates decorator arguments before any call.
+   */
+  export function param(name: string): any;
+  /** Inside a `@modifier`: where the wrapped function's body runs (`_;`). */
+  export const _: void;
+  /** Marks a function `virtual` so a contract outside this build can override it. Overrides within the build are inferred. */
+  export function virtual(...args: any[]): any;
   export function onlyOwner(...args: any[]): any;
   export function nonReentrant(...args: any[]): any;
   export function whenNotPaused(...args: any[]): any;
@@ -152,8 +261,13 @@ declare module "scriipture" {
   export function revert(message?: string): never;
   export function emit(...args: any[]): void;
 
-  /** Marks an event parameter as indexed (max 3 per event). */
-  export type Indexed<T> = T & { readonly __indexed: unique symbol };
+  /**
+   * Marks an event parameter as indexed (max 3 per event). A marker the
+   * transpiler reads by name; to TypeScript it is just `T`, so a plain value
+   * can be passed for it (a branded `T & {…}` made every indexed event
+   * impossible to emit without a cast).
+   */
+  export type Indexed<T> = T;
   /** Declares a Solidity event. The method body is ignored. */
   export function event(...args: any[]): any;
   /** Declares a Solidity custom error. The method body is ignored. */
@@ -168,6 +282,12 @@ declare module "scriipture" {
   export const abi: {
     encode(...args: any[]): Bytes;
     encodePacked(...args: any[]): Bytes;
-    encodeWithSelector(selector: Bytes32, ...args: any[]): Bytes;
+    encodeWithSelector(selector: Bytes4, ...args: any[]): Bytes;
+    encodeWithSignature(signature: string, ...args: any[]): Bytes;
+    /**
+     * `abi.decode<[bigint, Address]>(data)` → `abi.decode(data, (uint256, address))`.
+     * Destructure the result: `const [amount, to] = abi.decode<[bigint, Address]>(data);`.
+     */
+    decode<T>(data: Bytes): T;
   };
 }

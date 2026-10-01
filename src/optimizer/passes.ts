@@ -1,4 +1,4 @@
-import type { IRContract, IRExpression, IRProgram, IRStatement } from "../ir/types";
+import type { IRContract, IRProgram } from "../ir/types";
 import { packSlots } from "./pack-slots";
 import { cacheLength } from "./cache-length";
 import { uncheckedArithmetic } from "./unchecked";
@@ -12,6 +12,8 @@ import { preIncrement } from "./pre-increment";
 import { zeroInitStrip } from "./zero-init-strip";
 import { mappingLoadReuse } from "./mapping-load-reuse";
 import { eventIndexedHint } from "./event-indexed-hint";
+import { stateWrites } from "./walk";
+import { ancestorsOf, basesFirst } from "../mapper/lineage";
 
 export interface OptimizationReport {
   contract: string;
@@ -31,6 +33,19 @@ export interface OptimizeOptions {
    * upgradeable proxies and anything else that depends on slot positions.
    */
   reorderStorage?: boolean;
+  /**
+   * State variables of this contract that a contract derived from it writes.
+   * A per-contract pass cannot see those writes, and freezing such a variable
+   * as `constant` / `immutable` makes the derived contract fail to compile.
+   * `optimizeProgram` fills it in.
+   */
+  writtenByDerived?: Set<string>;
+  /**
+   * Errors declared by this contract's bases in the build, by name, with
+   * their parameter count, so `custom-errors` reuses an inherited error
+   * instead of declaring a duplicate. `optimizeProgram` fills it in.
+   */
+  inheritedErrors?: Map<string, number>;
 }
 
 export type Pass = (contract: IRContract, options: OptimizeOptions) => OptimizationChange[];
@@ -56,7 +71,38 @@ export const PASSES: Array<{ name: string; fn: Pass }> = [
 import { getPluginOptimizerPasses } from "../plugin/api";
 
 export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {}): OptimizationReport[] {
-  return program.contracts.map((c) => optimizeContract(c, options));
+  const derivedWrites = writesByDerivedContracts(program);
+  // Bases first, so the errors `custom-errors` synthesizes in a base are
+  // there for its derived contracts to reuse. Reports keep program order.
+  const reports = new Map<IRContract, OptimizationReport>();
+  for (const c of basesFirst(program)) {
+    const inheritedErrors = new Map(ancestorsOf(c, program).flatMap((b) => b.errors.map((e) => [e.name, e.params.length] as const)));
+    reports.set(c, optimizeContract(c, { ...options, writtenByDerived: derivedWrites.get(c.name), inheritedErrors }));
+  }
+  return program.contracts.map((c) => reports.get(c)!);
+}
+
+/** For each contract, the state variables written by the contracts in this program that inherit from it. */
+function writesByDerivedContracts(program: IRProgram): Map<string, Set<string>> {
+  const byName = new Map(program.contracts.map((c) => [c.name, c]));
+  const out = new Map<string, Set<string>>();
+  for (const c of program.contracts) {
+    const written = new Set<string>();
+    for (const fn of c.functions) for (const n of stateWrites(fn.body)) written.add(n);
+    // Every ancestor sees the writes, since a variable may be declared several levels up.
+    const seen = new Set<string>();
+    const visit = (name: string): void => {
+      const base = byName.get(name);
+      if (!base || seen.has(name)) return;
+      seen.add(name);
+      const set = out.get(name) ?? new Set<string>();
+      for (const n of written) set.add(n);
+      out.set(name, set);
+      for (const b of base.bases) visit(b);
+    };
+    for (const b of c.bases) visit(b);
+  }
+  return out;
 }
 
 export function optimizeContract(contract: IRContract, options: OptimizeOptions = {}): OptimizationReport {
@@ -72,33 +118,7 @@ export function optimizeContract(contract: IRContract, options: OptimizeOptions 
   return { contract: contract.name, changes };
 }
 
-export function walkStatements(stmts: IRStatement[], visit: (s: IRStatement, parent: IRStatement[] | null) => void): void {
-  for (const s of stmts) {
-    visit(s, stmts);
-    if (s.kind === "if") {
-      walkStatements(s.then, visit);
-      if (s.else) walkStatements(s.else, visit);
-    }
-    if (s.kind === "for" || s.kind === "while" || s.kind === "block") {
-      walkStatements(s.body, visit);
-    }
-  }
-}
-
-export function walkExpr(expr: IRExpression, visit: (e: IRExpression) => void): void {
-  visit(expr);
-  switch (expr.kind) {
-    case "member": return walkExpr(expr.object, visit);
-    case "index": walkExpr(expr.object, visit); walkExpr(expr.index, visit); return;
-    case "call": walkExpr(expr.callee, visit); for (const a of expr.args) walkExpr(a, visit); return;
-    case "new": for (const a of expr.args) walkExpr(a, visit); return;
-    case "binary": walkExpr(expr.left, visit); walkExpr(expr.right, visit); return;
-    case "unary": walkExpr(expr.operand, visit); return;
-    case "conditional": walkExpr(expr.test, visit); walkExpr(expr.consequent, visit); walkExpr(expr.alternate, visit); return;
-    case "nullish": walkExpr(expr.left, visit); walkExpr(expr.right, visit); return;
-    case "assign": walkExpr(expr.left, visit); walkExpr(expr.right, visit); return;
-    case "paren": walkExpr(expr.inner, visit); return;
-    case "templateString": for (const e of expr.expressions) walkExpr(e, visit); return;
-    case "object": for (const p of expr.properties) walkExpr(p.value, visit); return;
-  }
-}
+// The shared walkers, re-exported for the passes that import them from here.
+// This module used to carry its own copies, which skipped `unchecked` bodies
+// and `for` initializers, so a pass could miss a write it needed to see.
+export { walkStatements, walkExpr } from "./walk";

@@ -18,7 +18,7 @@ interface DecoratorRule {
   visibility?: "public" | "external" | "internal" | "private";
 }
 
-const FUNCTION_DECORATORS: Record<string, DecoratorRule> = {
+export const FUNCTION_DECORATORS: Record<string, DecoratorRule> = {
   view: { stateMutability: "view" },
   pure: { stateMutability: "pure" },
   invariant: { stateMutability: "view" },

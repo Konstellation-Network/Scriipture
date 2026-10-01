@@ -10,12 +10,14 @@ import type {
   IREventParam,
   IRExpression,
   IRFunction,
+  IRInterface,
   IRParam,
   IRPrimitiveName,
   IRProgram,
   IRStateVar,
   IRStatement,
   IRStructDecl,
+  IRCatchClause,
   IRSuperCall,
   IRType,
   SourceLocation,
@@ -34,14 +36,14 @@ export interface ParseResult {
 }
 
 export function parseContractFiles(filePaths: string[]): ParseResult {
-  const program: IRProgram = { contracts: [] };
+  const program: IRProgram = { contracts: [], interfaces: [] };
   const diagnostics: ParseDiagnostic[] = [];
 
   for (const filePath of filePaths) {
     const absPath = path.resolve(filePath);
     const source = fs.readFileSync(absPath, "utf8");
     const sourceFile = ts.createSourceFile(absPath, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
-    const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics, structs: new Map(), enums: new Map() };
+    const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics, structs: new Map(), enums: new Map(), interfaceNames: new Set() };
 
     // Structs and enums are declared at file level, next to the contract class,
     // and may be referenced before they are declared -- by the class, and by
@@ -49,10 +51,15 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
     // otherwise `interface A { b: B }` ahead of `interface B` reads `b` as an
     // opaque `custom` type instead of a struct.
     const structNodes: Array<{ name: string; members: ts.NodeArray<ts.TypeElement>; node: ts.Node }> = [];
+    const interfaceNodes: ts.InterfaceDeclaration[] = [];
     sourceFile.forEachChild((node) => {
       if (ts.isEnumDeclaration(node)) {
         const en = parseEnumDecl(node, ctx);
         ctx.enums.set(en.name, en);
+      } else if (ts.isInterfaceDeclaration(node) && isInterfaceShaped(node.members)) {
+        // Only methods: a Solidity interface, not a struct.
+        interfaceNodes.push(node);
+        ctx.interfaceNames.add(node.name.text);
       } else if (ts.isInterfaceDeclaration(node)) {
         structNodes.push({ name: node.name.text, members: node.members, node });
       } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
@@ -63,6 +70,15 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
       if (isStructShaped(s.members)) ctx.structs.set(s.name, { name: s.name, fields: [], natspec: extractNatspec(s.node, ctx), loc: loc(s.node, ctx) });
     }
     for (const s of structNodes) registerStruct(s.name, s.members, s.node, ctx);
+    for (const node of interfaceNodes) {
+      const iface = parseInterfaceDecl(node, ctx);
+      const dup = program.interfaces!.find((i) => i.name === iface.name);
+      if (dup) {
+        ctx.diagnostics.push({ message: `interface ${iface.name} is declared twice in this build (also at ${dup.sourceFile}:${dup.loc?.line}); each becomes ${iface.name}.sol, so one would overwrite the other`, loc: iface.loc! });
+      } else {
+        program.interfaces!.push(iface);
+      }
+    }
 
     sourceFile.forEachChild((node) => {
       if (ts.isClassDeclaration(node) && node.name) {
@@ -84,6 +100,10 @@ interface ParseContext {
   structs: Map<string, IRStructDecl>;
   /** File-level `enum` declarations, by name. */
   enums: Map<string, IREnumDecl>;
+  /** File-level method-only `interface` declarations, which become Solidity interfaces. */
+  interfaceNames: Set<string>;
+  /** Declared return type of the method being parsed; `return [a, b]` is a tuple only against a tuple type. */
+  returnType?: IRType;
 }
 
 function loc(node: ts.Node, ctx: ParseContext): SourceLocation {
@@ -94,12 +114,13 @@ function loc(node: ts.Node, ctx: ParseContext): SourceLocation {
 function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
   const name = cls.name!.text;
   const bases: string[] = [];
+  const interfaces: string[] = [];
   if (cls.heritageClauses) {
     for (const clause of cls.heritageClauses) {
-      if (clause.token === ts.SyntaxKind.ExtendsKeyword) {
-        for (const t of clause.types) {
-          bases.push(t.expression.getText(ctx.sourceFile));
-        }
+      for (const t of clause.types) {
+        const target = t.expression.getText(ctx.sourceFile);
+        if (clause.token === ts.SyntaxKind.ExtendsKeyword) bases.push(target);
+        else interfaces.push(target);
       }
     }
   }
@@ -141,7 +162,9 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
 
   return {
     name,
+    isAbstract: hasModifier(cls, ts.SyntaxKind.AbstractKeyword) || undefined,
     bases,
+    interfaces: interfaces.length > 0 ? interfaces : undefined,
     stateVars,
     functions,
     errors,
@@ -172,7 +195,35 @@ function extractNatspec(node: ts.Node, ctx: ParseContext): string[] | undefined 
       }
     }
   }
-  return lines.length > 0 ? lines : undefined;
+  const clean = sanitizeNatspec(lines);
+  return clean.length > 0 ? clean : undefined;
+}
+
+/** The tags solc accepts in NatSpec; any other `@tag` is a DocstringParsingError. */
+const NATSPEC_TAGS = new Set(["title", "author", "notice", "dev", "param", "return", "inheritdoc"]);
+
+/**
+ * Comments become `///` NatSpec, which solc parses: an unknown tag fails the
+ * build. JSDoc habits are translated rather than passed through -- `@returns`
+ * is `@return`, `@view` / `@pure` / `@payable` (read as mutability, see
+ * `interfaceMutability`) are dropped, and any other tag becomes a
+ * `@custom:` tag, which solc accepts and keeps in the devdoc.
+ */
+function sanitizeNatspec(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const fixed = line
+      .replace(/(^|\s)@(view|pure|payable)\b/g, "$1")
+      .replace(/(^|\s)@returns\b/g, "$1@return")
+      .replace(/(^|\s)@([A-Za-z][\w-]*)/g, (m, pre: string, tag: string) =>
+        NATSPEC_TAGS.has(tag) || tag.startsWith("custom") ? m : `${pre}@custom:${tag.toLowerCase().replace(/[^a-z-]/g, "-")}`)
+      .trimEnd();
+    if (fixed.trim() !== "" || line.trim() === "") out.push(fixed);
+  }
+  // Leading / trailing blank lines left behind by a dropped tag.
+  while (out.length > 0 && out[0]!.trim() === "") out.shift();
+  while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
+  return out;
 }
 
 function hasDecorator(node: ts.HasDecorators, name: string, ctx: ParseContext): boolean {
@@ -261,10 +312,27 @@ function parseStateVar(prop: ts.PropertyDeclaration, ctx: ParseContext): IRState
     type,
     decorators,
     initializer,
-    visibility: visibilityModifier(prop, ctx),
+    // A decorator wins over a keyword, as it does on methods.
+    visibility: (decorators.find((d) => d.name === "public" || d.name === "private" || d.name === "internal")?.name as IRStateVar["visibility"]) ?? visibilityModifier(prop, ctx),
     natspec: extractNatspec(prop, ctx),
     loc: loc(prop, ctx),
   };
+}
+
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === kind);
+}
+
+/**
+ * Solidity's special functions, recognised by name the way Solidity itself
+ * recognises them. `receive` is always `external payable`; `fallback` is
+ * `external`, and `payable` only with `@payable`.
+ */
+function specialKind(name: string, decorators: IRDecorator[]): IRFunction["special"] {
+  if (decorators.some((d) => d.name === "modifier")) return "modifier";
+  if (name === "receive") return "receive";
+  if (name === "fallback") return "fallback";
+  return undefined;
 }
 
 function parseMethod(method: ts.MethodDeclaration, ctx: ParseContext): IRFunction {
@@ -280,7 +348,31 @@ function parseMethod(method: ts.MethodDeclaration, ctx: ParseContext): IRFunctio
     ...parseDecorators(method, ctx),
   ];
   reportStatic(method, name, ctx);
+  const isAbstract = !method.body && hasModifier(method, ts.SyntaxKind.AbstractKeyword);
+  // TypeScript rejects a decorator on an abstract method (TS1249), so its
+  // mutability comes from the doc comment, as on an interface method.
+  if (isAbstract && !decorators.some((d) => d.name === "view" || d.name === "pure" || d.name === "payable")) {
+    const tag = interfaceMutability(method, ctx);
+    if (tag) decorators.push({ name: tag, args: [] });
+  }
+  if (!method.body && !isAbstract) {
+    // A TS overload signature. Solidity overloads are separate functions with
+    // separate bodies, which a TS class cannot express.
+    ctx.diagnostics.push({
+      message: `method "${name}" has no body; mark it \`abstract\` (in an \`abstract class\`) for a Solidity virtual function, or give it one. TS overload signatures have no Solidity equivalent`,
+      loc: loc(method, ctx),
+    });
+  }
+  ctx.returnType = returnType;
   const body = method.body ? parseBlockBody(method.body, ctx) : [];
+  ctx.returnType = undefined;
+  const special = specialKind(name, decorators);
+  if ((special === "receive" || special === "fallback") && (params.length > 0 || !(returnType.kind === "primitive" && returnType.name === "void"))) {
+    ctx.diagnostics.push({
+      message: `${name}() takes no parameters and returns nothing in Solidity; read msg.data for the calldata`,
+      loc: loc(method, ctx),
+    });
+  }
 
   const isAssembly = decorators.some((d) => d.name === "assembly");
   let assemblyBody: string | undefined;
@@ -291,6 +383,9 @@ function parseMethod(method: ts.MethodDeclaration, ctx: ParseContext): IRFunctio
   return {
     name,
     isConstructor: false,
+    special,
+    isAbstract: isAbstract || undefined,
+    isOverride: hasModifier(method, ts.SyntaxKind.OverrideKeyword) || undefined,
     decorators,
     params,
     returnType,
@@ -487,6 +582,59 @@ function parseStructDecl(
   return { decl: { name, fields, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) }, problems };
 }
 
+/**
+ * A TS interface made only of required method signatures: a candidate
+ * Solidity `interface`. It is emitted only if the build uses it (see
+ * `emitProgram`), so a TS-only callback shape stays TS-only.
+ */
+function isInterfaceShaped(members: ts.NodeArray<ts.TypeElement>): boolean {
+  return members.length > 0 && members.every((m) => ts.isMethodSignature(m) && !m.questionToken);
+}
+
+/**
+ * Mutability is part of an interface function's signature -- calling a
+ * non-`view` one from a `view` function does not compile -- but a TS method
+ * signature cannot carry a decorator. It is read from the doc comment instead:
+ * `/** @view *\/ balanceOf(a: Address): bigint;`.
+ */
+const INTERFACE_MUTABILITY = /(?:^|\s)@(view|pure|payable)\b/;
+
+/**
+ * The `@view` / `@pure` / `@payable` tag in the doc comment right before an
+ * interface method. Read from the member's own trivia rather than its leading
+ * comments or JSDoc: on a one-line interface, TS files
+ * `f(): T; /** @view *\/ g(): U;` as a trailing comment of `f` and gives `g`
+ * no JSDoc at all.
+ */
+function interfaceMutability(m: ts.TypeElement | ts.MethodDeclaration, ctx: ParseContext): string | undefined {
+  const trivia = ctx.sourceFile.text.slice(m.getFullStart(), m.getStart(ctx.sourceFile));
+  const docs = trivia.match(/\/\*\*[\s\S]*?\*\//g);
+  const last = docs?.[docs.length - 1];
+  return last ? INTERFACE_MUTABILITY.exec(last.replace(/^\/\*\*|\*\/$/g, ""))?.[1] : undefined;
+}
+
+function parseInterfaceDecl(node: ts.InterfaceDeclaration, ctx: ParseContext): IRInterface {
+  const functions: IRFunction[] = [];
+  for (const m of node.members) {
+    if (!ts.isMethodSignature(m)) continue;
+    const name = m.name.getText(ctx.sourceFile);
+    const natspec = extractNatspec(m, ctx);
+    const tag = interfaceMutability(m, ctx);
+    functions.push({
+      name,
+      isConstructor: false,
+      isAbstract: true,
+      decorators: tag ? [{ name: tag, args: [] }] : [],
+      params: m.parameters.map((p) => parseParam(p, ctx)),
+      returnType: m.type ? parseType(m.type, ctx) : { kind: "primitive", name: "void" },
+      body: [],
+      natspec,
+      loc: loc(m, ctx),
+    });
+  }
+  return { name: node.name.text, functions, events: [], sourceFile: ctx.filePath, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) };
+}
+
 /** `Uint8` … `Uint256`, `Int8` … `Int256`, `Bytes1` … `Bytes32` → the matching Solidity primitive. */
 function sizedPrimitive(name: string, node: ts.Node, ctx: ParseContext): IRType | undefined {
   const int = /^(Uint|Int)(\d+)$/.exec(name);
@@ -517,6 +665,16 @@ function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
     if (name === "Array" && args.length === 1) {
       return { kind: "array", element: parseType(args[0]!, ctx) };
     }
+    if (name === "FixedArray" && args.length === 2) {
+      // `FixedArray<bigint, 3>` → `uint256[3]`.
+      const n = args[1]!;
+      const len = ts.isLiteralTypeNode(n) && ts.isNumericLiteral(n.literal) ? Number(n.literal.text) : NaN;
+      if (!Number.isInteger(len) || len < 1) {
+        ctx.diagnostics.push({ message: `FixedArray length must be a positive integer literal, not "${n.getText(ctx.sourceFile)}"`, loc: loc(n, ctx) });
+        return { kind: "array", element: parseType(args[0]!, ctx) };
+      }
+      return { kind: "array", element: parseType(args[0]!, ctx), length: len };
+    }
     if (name === "Address") return { kind: "primitive", name: "address" };
     if (name === "Bytes") return { kind: "primitive", name: "bytes" };
     const sized = sizedPrimitive(name, typeNode, ctx);
@@ -528,6 +686,11 @@ function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
   if (ts.isArrayTypeNode(typeNode)) {
     return { kind: "array", element: parseType(typeNode.elementType, ctx) };
   }
+  if (ts.isTupleTypeNode(typeNode)) {
+    // `[bigint, boolean]` → `(uint256, bool)`: several return values.
+    return { kind: "tuple", elements: typeNode.elements.map((t) => parseType(ts.isNamedTupleMember(t) ? t.type : t, ctx)) };
+  }
+  if (ts.isParenthesizedTypeNode(typeNode)) return parseType(typeNode.type, ctx);
   switch (typeNode.kind) {
     case ts.SyntaxKind.BigIntKeyword:
       return { kind: "primitive", name: "uint256" };
@@ -559,10 +722,118 @@ function tryParseEmit(expr: ts.Expression, ctx: ParseContext, l?: SourceLocation
   if (!arg || expr.arguments.length !== 1 || !ts.isCallExpression(arg)) return undefined;
   return {
     kind: "emit",
-    eventName: arg.expression.getText(ctx.sourceFile),
+    eventName: declaredName(arg.expression, ctx),
     args: arg.arguments.map((a) => parseExpression(a, ctx)),
     loc: l,
   };
+}
+
+/**
+ * The name of an event or error as written at an `emit` / `revert`: `Transfer`
+ * or `this.Transfer`. Events and errors are declared as methods, so
+ * `this.Transfer(...)` is the spelling TypeScript itself accepts.
+ */
+function declaredName(callee: ts.Expression, ctx: ParseContext): string {
+  if (ts.isPropertyAccessExpression(callee) && callee.expression.kind === ts.SyntaxKind.ThisKeyword) return callee.name.text;
+  return callee.getText(ctx.sourceFile);
+}
+
+/**
+ * `throw new Error("msg")` is `revert("msg")`, and throwing a declared error
+ * (`throw new TooLow(a)`, `throw this.TooLow(a)`) is `revert TooLow(a)`.
+ * Lowering every throw to a bare `revert()` dropped the reason.
+ */
+function parseThrow(stmt: ts.ThrowStatement, ctx: ParseContext, l: SourceLocation): IRStatement {
+  const arg = stmt.expression;
+  const callee = ts.isNewExpression(arg) || ts.isCallExpression(arg) ? arg.expression : undefined;
+  const args = (ts.isNewExpression(arg) || ts.isCallExpression(arg) ? arg.arguments ?? [] : []).map((a) => parseExpression(a, ctx));
+  if (callee && ts.isIdentifier(callee) && callee.text === "Error") {
+    if (args.length > 1) ctx.diagnostics.push({ message: "`throw new Error(...)` takes at most one argument, the revert reason", loc: l });
+    return { kind: "expression", expr: { kind: "call", callee: { kind: "identifier", name: "revert" }, args: args.slice(0, 1) }, loc: l };
+  }
+  if (callee && (ts.isIdentifier(callee) || (ts.isPropertyAccessExpression(callee) && callee.expression.kind === ts.SyntaxKind.ThisKeyword))) {
+    return { kind: "revert", errorName: declaredName(callee, ctx), args, loc: l };
+  }
+  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
+    return { kind: "expression", expr: { kind: "call", callee: { kind: "identifier", name: "revert" }, args: [parseExpression(arg, ctx)] }, loc: l };
+  }
+  ctx.diagnostics.push({
+    message: "`throw` needs `new Error(\"reason\")` or a declared error (`throw new TooLow(a)`); Solidity cannot revert with an arbitrary value",
+    loc: l,
+  });
+  return { kind: "throw", argument: parseExpression(arg, ctx), loc: l };
+}
+
+/**
+ * `unchecked(() => { … })` is Solidity's `unchecked { … }` block: arithmetic
+ * inside it wraps instead of reverting. Only a block-bodied arrow is accepted,
+ * so the statements are exactly the ones written.
+ */
+function tryParseUnchecked(expr: ts.Expression, ctx: ParseContext, l: SourceLocation): IRStatement | undefined {
+  if (!ts.isCallExpression(expr) || !ts.isIdentifier(expr.expression) || expr.expression.text !== "unchecked") return undefined;
+  const [fn] = expr.arguments;
+  if (expr.arguments.length !== 1 || !fn || !(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || !ts.isBlock(fn.body) || fn.parameters.length > 0) {
+    ctx.diagnostics.push({ message: "`unchecked` takes one argument, a block: `unchecked(() => { … })`", loc: l });
+    return { kind: "unchecked", body: [], loc: l };
+  }
+  return { kind: "unchecked", body: parseBlockBody(fn.body, ctx), loc: l };
+}
+
+/**
+ * Solidity's `try` works on exactly one external call (or `new`), and its
+ * success block sees that call's return values. The TS spelling is a `try`
+ * whose first statement is that call:
+ *
+ *   try { const bal = at<IERC20>(t).balanceOf(a); … } catch { … }
+ *   → try IERC20(t).balanceOf(a) returns (uint256 bal) { … } catch { … }
+ *
+ * `catch (e)` binds the revert data: `catch (bytes memory e)`.
+ */
+function parseTry(stmt: ts.TryStatement, ctx: ParseContext, l: SourceLocation): IRStatement {
+  const fail = (message: string): IRStatement => {
+    ctx.diagnostics.push({ message, loc: l });
+    return { kind: "raw", text: stmt.getText(ctx.sourceFile), loc: l };
+  };
+  if (stmt.finallyBlock) return fail("`finally` has no Solidity equivalent; put the code after the try / catch");
+  if (!stmt.catchClause) return fail("Solidity's `try` needs a `catch`");
+  const [first, ...rest] = stmt.tryBlock.statements;
+  if (!first) return fail("the `try` block is empty; its first statement must be the external call being tried");
+
+  let callNode: ts.Expression | undefined;
+  const returns: IRParam[] = [];
+  const body: IRStatement[] = [];
+  if (ts.isVariableStatement(first) && first.declarationList.declarations.length === 1) {
+    const d = first.declarationList.declarations[0]!;
+    callNode = d.initializer;
+    if (ts.isIdentifier(d.name)) {
+      returns.push({ name: d.name.text, type: d.type ? parseType(d.type, ctx) : { kind: "custom", name: "unknown" } });
+    } else if (ts.isArrayBindingPattern(d.name)) {
+      const types = d.type && ts.isTupleTypeNode(d.type) ? d.type.elements.map((t) => parseType(ts.isNamedTupleMember(t) ? t.type : t, ctx)) : [];
+      d.name.elements.forEach((el, i) => {
+        const type = types[i] ?? { kind: "custom", name: "unknown" } as IRType;
+        returns.push({ name: ts.isBindingElement(el) && ts.isIdentifier(el.name) ? el.name.text : "", type });
+      });
+    }
+  } else if (ts.isExpressionStatement(first)) {
+    callNode = first.expression;
+  } else if (ts.isReturnStatement(first) && first.expression) {
+    // `try { return I(t).f(); }` → `try I(t).f() returns (T r) { return r; }`.
+    callNode = first.expression;
+    const r = "__tryResult";
+    returns.push({ name: r, type: ctx.returnType ?? { kind: "custom", name: "unknown" } });
+    body.push({ kind: "return", value: { kind: "identifier", name: r }, loc: l });
+  }
+  if (!callNode || !(ts.isCallExpression(callNode) || ts.isNewExpression(callNode))) {
+    return fail("the first statement of a `try` block must be the external call (or `new`) being tried: `const r = at<IFoo>(addr).f()`, `at<IFoo>(addr).f();` or `return …`");
+  }
+  const call = parseExpression(callNode, ctx);
+  body.push(...rest.map((st) => parseStatement(st, ctx)));
+
+  const cc = stmt.catchClause;
+  const param = cc.variableDeclaration && ts.isIdentifier(cc.variableDeclaration.name) ? cc.variableDeclaration.name.text : undefined;
+  const catchBody = parseBlockBody(cc.block, ctx);
+  const catches: IRCatchClause[] = [param ? { kind: "bytes", param, body: catchBody } : { kind: "any", body: catchBody }];
+  return { kind: "try", call, returns, body, catches, loc: l };
 }
 
 /**
@@ -577,7 +848,7 @@ function tryParseRevert(expr: ts.Expression, ctx: ParseContext, l?: SourceLocati
   if (!arg || expr.arguments.length !== 1 || !ts.isCallExpression(arg)) return undefined;
   return {
     kind: "revert",
-    errorName: arg.expression.getText(ctx.sourceFile),
+    errorName: declaredName(arg.expression, ctx),
     args: arg.arguments.map((a) => parseExpression(a, ctx)),
     loc: l,
   };
@@ -590,11 +861,26 @@ function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
     if (emitted) return emitted;
     const reverted = tryParseRevert(stmt.expression, ctx, l);
     if (reverted) return reverted;
+    const unchecked = tryParseUnchecked(stmt.expression, ctx, l);
+    if (unchecked) return unchecked;
     return { kind: "expression", expr: parseExpression(stmt.expression, ctx), loc: l };
   }
   if (ts.isReturnStatement(stmt)) {
+    if (stmt.expression && ts.isArrayLiteralExpression(stmt.expression) && ctx.returnType?.kind === "tuple") {
+      return { kind: "return", value: parseTuple(stmt.expression, ctx), loc: l };
+    }
     return { kind: "return", value: stmt.expression ? parseExpression(stmt.expression, ctx) : undefined, loc: l };
   }
+  if (ts.isDoStatement(stmt)) {
+    return {
+      kind: "while",
+      doWhile: true,
+      test: parseExpression(stmt.expression, ctx),
+      body: branchToStatements(stmt.statement, ctx),
+      loc: l,
+    };
+  }
+  if (ts.isTryStatement(stmt)) return parseTry(stmt, ctx, l);
   if (ts.isIfStatement(stmt)) {
     return {
       kind: "if",
@@ -675,7 +961,7 @@ function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
         kind: "destructure",
         names,
         types,
-        init: parseExpression(first.initializer, ctx),
+        init: ts.isArrayLiteralExpression(first.initializer) ? parseTuple(first.initializer, ctx) : parseExpression(first.initializer, ctx),
         isConst: (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0,
         loc: l,
       };
@@ -691,9 +977,7 @@ function parseStatement(stmt: ts.Statement, ctx: ParseContext): IRStatement {
       };
     }
   }
-  if (ts.isThrowStatement(stmt)) {
-    return { kind: "throw", argument: parseExpression(stmt.expression, ctx), loc: l };
-  }
+  if (ts.isThrowStatement(stmt)) return parseThrow(stmt, ctx, l);
   if (ts.isBreakStatement(stmt)) return { kind: "break", loc: l };
   if (ts.isContinueStatement(stmt)) return { kind: "continue", loc: l };
   if (stmt.kind === ts.SyntaxKind.EmptyStatement) return { kind: "block", body: [], loc: l };
@@ -726,8 +1010,6 @@ function expressionName(expr: ts.Expression): string {
 
 const STATEMENT_NAMES: Partial<Record<ts.SyntaxKind, string>> = {
   [ts.SyntaxKind.SwitchStatement]: "a `switch` statement",
-  [ts.SyntaxKind.DoStatement]: "a `do … while` loop",
-  [ts.SyntaxKind.TryStatement]: "a `try` / `catch` block",
   [ts.SyntaxKind.ForOfStatement]: "a `for … of` loop",
   [ts.SyntaxKind.ForInStatement]: "a `for … in` loop",
   [ts.SyntaxKind.LabeledStatement]: "a labelled statement",
@@ -757,6 +1039,7 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
       if (t.kind === "struct") obj.structName = t.name;
       return obj;
     }
+    if (ts.isAsExpression(expr)) return parseCast(expr, ctx);
     return parseExpression(expr.expression, ctx);
   }
   if (ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr)) {
@@ -802,25 +1085,22 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
       index: parseExpression(expr.argumentExpression, ctx),
     };
   }
-  if (ts.isCallExpression(expr)) {
-    if (ts.isIdentifier(expr.expression) && expr.arguments.length === 1) {
-      const calleeName = expr.expression.text;
-      if (calleeName === "Number" || calleeName === "BigInt") {
-        return parseExpression(expr.arguments[0]!, ctx);
-      }
-    }
-    return {
-      kind: "call",
-      callee: parseExpression(expr.expression, ctx),
-      args: expr.arguments.map((a) => parseExpression(a, ctx)),
-    };
-  }
+  if (ts.isCallExpression(expr)) return parseCall(expr, ctx);
   if (ts.isNewExpression(expr)) {
-    return {
-      kind: "new",
-      className: expr.expression.getText(ctx.sourceFile),
-      args: (expr.arguments ?? []).map((a) => parseExpression(a, ctx)),
-    };
+    const className = expr.expression.getText(ctx.sourceFile);
+    const args = (expr.arguments ?? []).map((a) => parseExpression(a, ctx));
+    if (className === "Array" && expr.typeArguments?.length === 1) {
+      // `new Array<bigint>(n)` → `new uint256[](n)`, a memory array of length n.
+      const type: IRType = { kind: "array", element: parseType(expr.typeArguments[0]!, ctx) };
+      if (args.length !== 1) ctx.diagnostics.push({ message: "`new Array<T>(n)` takes exactly one argument, the length", loc: loc(expr, ctx) });
+      return { kind: "new", className, args, type };
+    }
+    return { kind: "new", className, args };
+  }
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(expr.left)) {
+    // `[a, b] = [b, a]` / `[x, y] = this.pair()` → `(a, b) = (b, a)`.
+    const right = ts.isArrayLiteralExpression(expr.right) ? parseTuple(expr.right, ctx) : parseExpression(expr.right, ctx);
+    return { kind: "assign", op: "=", left: parseTuple(expr.left, ctx), right };
   }
   if (ts.isBinaryExpression(expr)) {
     const opText = expr.operatorToken.getText(ctx.sourceFile);
@@ -882,6 +1162,120 @@ function parseExpression(expr: ts.Expression, ctx: ParseContext): IRExpression {
     loc: loc(expr, ctx),
   });
   return { kind: "raw", text: expr.getText(ctx.sourceFile) };
+}
+
+/**
+ * `[a, b]` where Solidity has a tuple: a `return` from a function with a tuple
+ * return type, and either side of a tuple assignment. A hole (`[a, , c]`)
+ * stays empty, as it does in Solidity.
+ */
+function parseTuple(expr: ts.ArrayLiteralExpression, ctx: ParseContext): IRExpression {
+  return {
+    kind: "tuple",
+    elements: expr.elements.map((e) => (ts.isOmittedExpression(e) ? undefined : parseExpression(e, ctx))),
+  };
+}
+
+/** Solidity's elementary type names that a TS cast can target with an explicit conversion. */
+const CONVERTIBLE = /^(u?int\d+|bytes\d+|address)$/;
+
+/**
+ * `x as Uint8`. TypeScript erases the cast; Solidity needs it spelled out
+ * whenever it narrows (`uint8(x)`), and rejects the assignment otherwise. The
+ * parser keeps the target type; the emitter writes the conversion only when
+ * the operand's type is known to differ, so `(votes + 1n) as Uint64` stays
+ * `votes + 1` when `votes` is already a `uint64`.
+ *
+ * A literal needs no conversion (`51n as Uint8` is `51`), except a hex string
+ * cast to a fixed-size byte type: `"0xdeadbeef" as Bytes4` is the literal
+ * `0xdeadbeef`, which Solidity accepts for a `bytes4` of exactly that width.
+ */
+function parseCast(expr: ts.AsExpression, ctx: ParseContext): IRExpression {
+  const inner = parseExpression(expr.expression, ctx);
+  const t = parseType(expr.type, ctx);
+  const prim = t.kind === "primitive" ? t.name : undefined;
+  if (inner.kind === "literal" && inner.literalType === "string" && prim) {
+    const hex = /^0x([0-9a-fA-F]*)$/.exec(inner.value);
+    const width = /^bytes(\d+)$/.exec(prim);
+    if (hex && width && hex[1]!.length === Number(width[1]) * 2) return { kind: "raw", text: inner.value };
+    if (hex && prim === "bytes" && hex[1]!.length % 2 === 0) return { kind: "raw", text: `hex"${hex[1]}"` };
+    if (width || prim === "bytes") {
+      ctx.diagnostics.push({
+        message: `"${inner.value}" as ${expr.type.getText(ctx.sourceFile)}: a byte literal is written as hex, with exactly ${width ? Number(width[1]) * 2 : "an even number of"} hex digits after 0x`,
+        loc: loc(expr, ctx),
+      });
+    }
+    return inner;
+  }
+  // Only a branded type asks for a conversion: `x as bigint` is TypeScript's
+  // way of saying "treat this as a number", not Solidity's `uint256(x)`.
+  const branded = ts.isTypeReferenceNode(expr.type);
+  if (isLiteralish(inner) || !branded || !prim || !CONVERTIBLE.test(prim)) return inner;
+  return { kind: "call", callee: { kind: "identifier", name: prim }, args: [inner], typeArgs: [t], cast: true } as IRExpression;
+}
+
+/** A literal, or a negated one: Solidity converts these implicitly when they fit. */
+function isLiteralish(e: IRExpression): boolean {
+  if (e.kind === "paren") return isLiteralish(e.inner);
+  if (e.kind === "unary" && e.op === "-") return isLiteralish(e.operand);
+  return e.kind === "literal";
+}
+
+/** Keys Solidity accepts in a call-options block `{value: …, gas: …, salt: …}`. */
+const CALL_OPTION_KEYS = new Set(["value", "gas"]);
+const LOW_LEVEL = new Set(["call", "delegatecall", "staticcall"]);
+
+/**
+ * JavaScript's standard library, which a contract cannot call: `Math.max(a, b)`
+ * reached solc as an undeclared identifier. (`console` is left alone: forge-std
+ * provides `console.log` to tests.)
+ */
+const JS_BUILTINS = new Set(["Math", "JSON", "Date", "Object", "Reflect", "Promise", "Symbol", "String", "Array", "Number", "BigInt", "parseInt", "parseFloat"]);
+
+function parseCall(expr: ts.CallExpression, ctx: ParseContext): IRExpression {
+  const callee = expr.expression;
+  if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && JS_BUILTINS.has(callee.expression.text)) {
+    ctx.diagnostics.push({
+      message: `\`${callee.getText(ctx.sourceFile)}\` is JavaScript's standard library, which does not exist on-chain; write the logic out (e.g. \`a > b ? a : b\` for Math.max)`,
+      loc: loc(expr, ctx),
+    });
+  }
+  const typeArgs = expr.typeArguments?.map((t) => parseType(t, ctx));
+  if (ts.isIdentifier(callee)) {
+    const name = callee.text;
+    if ((name === "Number" || name === "BigInt") && expr.arguments.length === 1) {
+      // A widening to uint256 when the operand is narrower (an enum, a uint8);
+      // the emitter drops it when the operand already is one.
+      return { kind: "call", callee: { kind: "identifier", name: "BigInt" }, args: [parseExpression(expr.arguments[0]!, ctx)] };
+    }
+    if (name === "at") {
+      // `at<IERC20>(token)` → `IERC20(token)`: the contract at an address, typed.
+      const target = expr.typeArguments?.[0];
+      if (!target || !ts.isTypeReferenceNode(target) || expr.arguments.length !== 1) {
+        ctx.diagnostics.push({ message: "`at` takes one type argument and one address: `at<IERC20>(token)`", loc: loc(expr, ctx) });
+      } else {
+        return { kind: "call", callee: { kind: "identifier", name: target.typeName.getText(ctx.sourceFile) }, args: [parseExpression(expr.arguments[0]!, ctx)] };
+      }
+    }
+    if (name === "type" && expr.arguments.length === 0 && typeArgs?.length === 1) {
+      // `type<Uint64>().max`, `type<IERC20>().interfaceId`.
+      return { kind: "call", callee: { kind: "identifier", name: "type" }, args: [], typeArgs };
+    }
+  }
+  const args = expr.arguments.map((a) => parseExpression(a, ctx));
+  // `to.call({ value: v }, data)` → `to.call{value: v}(data)`. Only the
+  // low-level calls take an options object this way, so a struct argument to
+  // any other function is never mistaken for one.
+  if (ts.isPropertyAccessExpression(callee) && LOW_LEVEL.has(callee.name.text) && expr.arguments.length === 2) {
+    const first = expr.arguments[0]!;
+    if (ts.isObjectLiteralExpression(first) && first.properties.every((p) => ts.isPropertyAssignment(p) && CALL_OPTION_KEYS.has(p.name.getText(ctx.sourceFile)))) {
+      const options = first.properties.map((p) => ({ name: p.name!.getText(ctx.sourceFile), value: parseExpression((p as ts.PropertyAssignment).initializer, ctx) }));
+      return { kind: "call", callee: parseExpression(callee, ctx), args: args.slice(1), options };
+    }
+  }
+  const out: IRExpression = { kind: "call", callee: parseExpression(callee, ctx), args };
+  if (typeArgs && typeArgs.length > 0) out.typeArgs = typeArgs;
+  return out;
 }
 
 function parseObjectLiteral(

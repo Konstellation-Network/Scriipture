@@ -1,5 +1,6 @@
-import type { IRExpression } from "../ir/types";
+import type { IRExpression, IRType } from "../ir/types";
 import { emptinessTest, inferType, isZeroLiteral, type TypeEnv } from "./infer";
+import { sameType, solidityType } from "./types";
 
 
 /**
@@ -33,10 +34,22 @@ const BINARY_OP_MAP: Record<string, string> = {
 
 export const SUPPORTED_BINARY_OPS: ReadonlySet<string> = new Set(Object.keys(BINARY_OP_MAP));
 
-/** Compound assignments the emitter passes through unchanged, plus plain `=`. */
+/**
+ * Compound assignments the emitter can lower, plus plain `=`. All pass
+ * through unchanged except `**=`, which Solidity does not have: it becomes
+ * `x = x ** y`.
+ */
 export const SUPPORTED_ASSIGN_OPS: ReadonlySet<string> = new Set([
   "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "**=",
 ]);
+
+/**
+ * Solidity's ether and time units. `1n * ether` reads as `1 ether`, and a
+ * bare `days` as `1 days`: in Solidity a unit is a literal suffix, never a
+ * value of its own. None can be a Solidity identifier, so there is no local
+ * or state variable they could be confused with.
+ */
+const UNITS = new Set(["wei", "gwei", "ether", "seconds", "minutes", "hours", "days", "weeks"]);
 
 const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
   msg: true,
@@ -57,7 +70,8 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
     case "literal":
       return emitLiteral(expr);
     case "identifier":
-      return expr.name;
+      // `_` is a modifier's placeholder statement and emits as itself.
+      return UNITS.has(expr.name) && !ctx.localTypes?.has(expr.name) ? `1 ${expr.name}` : expr.name;
     case "this":
       return "this";
     case "super":
@@ -70,8 +84,13 @@ function emit(expr: IRExpression, ctx: EmitContext): string {
       return `${emit(expr.object, ctx)}[${emit(expr.index, ctx)}]`;
     case "call":
       return emitCall(expr, ctx);
-    case "new":
-      return `new ${expr.className}(${expr.args.map((a) => emit(a, ctx)).join(", ")})`;
+    case "new": {
+      // `new Array<T>(n)` → `new T[](n)`.
+      const target = expr.type ? solidityType(expr.type) : expr.className;
+      return `new ${target}${emitOptions(expr.options, ctx)}(${expr.args.map((a) => emit(a, ctx)).join(", ")})`;
+    }
+    case "tuple":
+      return `(${expr.elements.map((e) => (e ? emit(e, ctx) : "")).join(", ")})`;
     case "binary":
       return emitBinary(expr, ctx);
     case "unary": {
@@ -125,6 +144,8 @@ const EQUALITY_OPS = new Set(["==", "!=", "===", "!=="]);
 function emitAssign(expr: Extract<IRExpression, { kind: "assign" }>, ctx: EmitContext): string {
   const left = emit(expr.left, ctx);
   const right = emit(expr.right, ctx);
+  // Solidity has no `**=`.
+  if (expr.op === "**=") return `${left} = ${left} ** ${isAtomic(expr.right) ? right : `(${right})`}`;
   if (expr.op === "+=") {
     const t = inferType(expr.left, ctx);
     if (t?.kind === "primitive" && (t.name === "string" || t.name === "bytes")) {
@@ -153,6 +174,13 @@ function emitBinary(expr: Extract<IRExpression, { kind: "binary" }>, ctx: EmitCo
   const op = BINARY_OP_MAP[expr.op] ?? expr.op;
   const left = emit(expr.left, ctx);
   const right = emit(expr.right, ctx);
+  // `2n * ether` → `2 ether`: a unit is a suffix on a number literal.
+  if (expr.op === "*") {
+    const unit = (e: IRExpression) => e.kind === "identifier" && UNITS.has(e.name) && !ctx.localTypes?.has(e.name) ? e.name : undefined;
+    const lit = (e: IRExpression) => e.kind === "literal" && (e.literalType === "bigint" || e.literalType === "number");
+    if (lit(expr.left) && unit(expr.right)) return `${left} ${unit(expr.right)}`;
+    if (lit(expr.right) && unit(expr.left)) return `${right} ${unit(expr.left)}`;
+  }
   const kind = dynamicBytesKind(expr, ctx);
   if (kind) {
     const hash = (v: string) => (kind === "string" ? `keccak256(bytes(${v}))` : `keccak256(${v})`);
@@ -173,6 +201,7 @@ function isAtomic(expr: IRExpression): boolean {
     case "call":
     case "new":
     case "object":
+    case "tuple":
       return true;
     case "paren":
       return isAtomic(expr.inner);
@@ -199,6 +228,12 @@ function emitMember(expr: Extract<IRExpression, { kind: "member" }>, ctx: EmitCo
   if (expr.object.kind === "this" && ctx.stateVarNames.has(expr.property)) {
     return expr.property;
   }
+  // `this.address` is the contract's own address. Inherited state is typed
+  // through `stateVarTypes`, so a base's variable named `address` -- which
+  // Solidity would reject anyway -- is not mistaken for it.
+  if (expr.object.kind === "this" && expr.property === "address" && !ctx.stateVarTypes?.has("address")) {
+    return "address(this)";
+  }
   if (expr.object.kind === "this") {
     return expr.property;
   }
@@ -208,7 +243,42 @@ function emitMember(expr: Extract<IRExpression, { kind: "member" }>, ctx: EmitCo
   return `${emit(expr.object, ctx)}.${expr.property}`;
 }
 
+/** A call-options block: `{value: v, gas: g}`, or nothing. */
+function emitOptions(options: Array<{ name: string; value: IRExpression }> | undefined, ctx: EmitContext): string {
+  if (!options || options.length === 0) return "";
+  return `{${options.map((o) => `${o.name}: ${emit(o.value, ctx)}`).join(", ")}}`;
+}
+
+/**
+ * `x as Uint8` and `BigInt(x)`: a conversion Solidity needs only when the
+ * operand's type is known and different. An unknown type is left alone --
+ * adding a conversion on a guess can turn a compile error into a silent
+ * truncation.
+ */
+function emitConversion(target: IRType, name: string, arg: IRExpression, ctx: EmitContext): string {
+  const from = inferType(arg, ctx);
+  if (!from || sameType(from, target)) return emit(arg, ctx);
+  // `(a + b) as Uint64` is `uint64(a + b)`: the conversion's own parentheses suffice.
+  return `${name}(${emit(arg.kind === "paren" ? arg.inner : arg, ctx)})`;
+}
+
 function emitCall(expr: Extract<IRExpression, { kind: "call" }>, ctx: EmitContext): string {
+  if (expr.cast && expr.typeArgs?.[0] && expr.callee.kind === "identifier" && expr.args.length === 1) {
+    return emitConversion(expr.typeArgs[0], expr.callee.name, expr.args[0]!, ctx);
+  }
+  if (expr.callee.kind === "identifier" && expr.callee.name === "BigInt" && expr.args.length === 1) {
+    return emitConversion({ kind: "primitive", name: "uint256" }, "uint256", expr.args[0]!, ctx);
+  }
+  if (expr.callee.kind === "identifier" && expr.callee.name === "type" && expr.typeArgs?.length === 1 && expr.args.length === 0) {
+    return `type(${solidityType(expr.typeArgs[0]!)})`;
+  }
+  // `abi.decode<[bigint, Address]>(data)` → `abi.decode(data, (uint256, address))`.
+  if (expr.callee.kind === "member" && expr.callee.property === "decode" && expr.callee.object.kind === "identifier" &&
+      expr.callee.object.name === "abi" && expr.typeArgs?.length === 1 && expr.args.length === 1) {
+    const t = expr.typeArgs[0]!;
+    const parts = t.kind === "tuple" ? t.elements : [t];
+    return `abi.decode(${emit(expr.args[0]!, ctx)}, (${parts.map((p) => solidityType(p)).join(", ")}))`;
+  }
   if (expr.callee.kind === "identifier" && expr.callee.name === "validate" && expr.args.length === 1) {
     const arg = emit(expr.args[0]!, ctx);
     return `_validateAddr(${arg})`;
@@ -239,7 +309,7 @@ function emitCall(expr: Extract<IRExpression, { kind: "call" }>, ctx: EmitContex
     if (expr.args.length === 0) return "revert()";
     return `revert(${expr.args.map((a) => emit(a, ctx)).join(", ")})`;
   }
-  return `${emit(expr.callee, ctx)}(${expr.args.map((a) => emit(a, ctx)).join(", ")})`;
+  return `${emit(expr.callee, ctx)}${emitOptions(expr.options, ctx)}(${expr.args.map((a) => emit(a, ctx)).join(", ")})`;
 }
 
 function emitTemplate(expr: Extract<IRExpression, { kind: "templateString" }>, ctx: EmitContext): string {

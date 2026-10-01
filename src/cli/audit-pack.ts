@@ -31,11 +31,17 @@ export async function auditPackCommand(input: string, opts: AuditPackOptions): P
   const auditRoot = path.resolve(opts.out ?? "out/audit");
   fs.mkdirSync(auditRoot, { recursive: true });
 
-  for (let i = 0; i < emitted.length; i++) {
+  // emitProgram lists contracts first, in program order, then the interfaces
+  // they import. Each pack carries the build's other .sol files beside its
+  // own, so Slither can resolve `import "./Base.sol"` / `import "./IFoo.sol"`.
+  for (let i = 0; i < program.contracts.length; i++) {
     const e = emitted[i]!;
     const contract = program.contracts[i]!;
     const dir = path.join(auditRoot, contract.name);
     fs.mkdirSync(dir, { recursive: true });
+    for (const other of emitted) {
+      if (other !== e) fs.writeFileSync(path.join(dir, `${other.name}.sol`), other.solidity, "utf8");
+    }
 
     const tsTarget = path.join(dir, path.basename(contract.sourceFile));
     fs.copyFileSync(contract.sourceFile, tsTarget);

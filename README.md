@@ -69,6 +69,135 @@ That output is real, not illustrative — it's what `scriipture build` produces 
 
 **You ship Solidity, not a black box.** The `.sol` is the artifact. Read it, diff it, hand it to an auditor.
 
+### A fuller one: events, an interface, a modifier, custom errors
+
+```ts
+import { Address, Indexed, storage, view, modifier, event, error, msg, emit, at, require } from "scriipture";
+
+declare const onlyAdmin: MethodDecorator;
+
+export interface IERC20 {
+  transfer(to: Address, amount: bigint): boolean;
+}
+
+export class Tips {
+  @storage admin: Address;
+  @storage tipped: Map<Address, bigint> = new Map();
+
+  @event Tipped(from: Indexed<Address>, to: Indexed<Address>, amount: bigint): void {}
+  @error ZeroTip(): void {}
+
+  constructor() {
+    this.admin = msg.sender;
+  }
+
+  @modifier
+  onlyAdmin(): void {
+    require(msg.sender === this.admin, "not admin");
+  }
+
+  tip(token: Address, to: Address, amount: bigint): void {
+    if (amount === 0n) throw this.ZeroTip();
+    require(at<IERC20>(token).transfer(to, amount), "transfer failed");
+    this.tipped.set(to, (this.tipped.get(to) ?? 0n) + amount);
+    emit(this.Tipped(msg.sender, to, amount));
+  }
+
+  @view
+  totalFor(who: Address): bigint {
+    return this.tipped.get(who) ?? 0n;
+  }
+
+  @onlyAdmin
+  handOver(next: Address): void {
+    this.admin = next;
+  }
+}
+```
+
+**Emits** `Tips.sol`:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "./IERC20.sol";
+
+contract Tips {
+    error ZeroTip();
+    error NotAdmin();
+    error TransferFailed();
+
+    event Tipped(address indexed from, address indexed to, uint256 amount);
+
+    address public admin;
+    mapping(address => uint256) public tipped;
+
+    constructor() {
+        admin = msg.sender;
+    }
+
+    modifier onlyAdmin() {
+        if (!(msg.sender == admin)) {
+            revert NotAdmin();
+        }
+        _;
+    }
+
+    function tip(address token, address to, uint256 amount) public {
+        if (amount == 0) {
+            revert ZeroTip();
+        }
+        if (!IERC20(token).transfer(to, amount)) {
+            revert TransferFailed();
+        }
+        tipped[to] = tipped[to] + amount;
+        emit Tipped(msg.sender, to, amount);
+    }
+
+    function totalFor(address who) public view returns (uint256) {
+        return tipped[who];
+    }
+
+    function handOver(address next) public onlyAdmin {
+        admin = next;
+    }
+}
+```
+
+and, because `Tips` calls it through `at<IERC20>(…)`, `IERC20.sol` beside it:
+
+```solidity
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+```
+
+Every event is declared and emitted exactly as written. `Indexed<T>` becomes an `indexed` topic, and an event declared in a base contract can be emitted from a derived one. `throw this.ZeroTip()` is `revert ZeroTip();`, and the string `require`s became custom errors on the way out.
+
+### TypeScript ↔ Solidity at a glance
+
+| You write | Scriipture emits |
+|---|---|
+| `@event Tipped(from: Indexed<Address>, amount: bigint): void {}` | `event Tipped(address indexed from, uint256 amount);` |
+| `emit(this.Tipped(msg.sender, amount))` | `emit Tipped(msg.sender, amount);` |
+| `@error TooLow(have: bigint): void {}` / `throw this.TooLow(x)` | `error TooLow(uint256 have);` / `revert TooLow(x);` |
+| `export interface IERC20 { … }` + `at<IERC20>(t).transfer(to, v)` | `interface IERC20 { … }` + `IERC20(t).transfer(to, v)` |
+| `class Vault extends Base implements IVault` | `contract Vault is IVault, Base` |
+| `abstract class Base` / `abstract fee(a: bigint): bigint;` | `abstract contract Base` / `function fee(uint256 a) public virtual returns (uint256);` |
+| a method redefined in a derived class | `virtual` on the base, `override` on the derived (inferred) |
+| `@modifier onlyAdmin(): void { … }` + `@onlyAdmin f()` | `modifier onlyAdmin() { …; _; }` + `function f() public onlyAdmin` |
+| `receive(): void { … }` / `fallback(): void { … }` | `receive() external payable { … }` / `fallback() external { … }` |
+| `f(): [bigint, boolean]` / `return [a, true]` / `const [x, ok] = this.f()` | `returns (uint256, bool)` / `return (a, true);` / `(uint256 x, bool ok) = f();` |
+| `try { const b = at<IERC20>(t).balanceOf(a); … } catch { … }` | `try IERC20(t).balanceOf(a) returns (uint256 b) { … } catch { … }` |
+| `do { … } while (c)` / `unchecked(() => { … })` | `do { … } while (c);` / `unchecked { … }` |
+| `Map<Address, bigint>` / `FixedArray<bigint, 3>` / `new Array<bigint>(n)` | `mapping(address => uint256)` / `uint256[3]` / `new uint256[](n)` |
+| `x as Uint8` / `BigInt(status)` / `type<Uint64>().max` | `uint8(x)` / `uint256(status)` / `type(uint64).max` |
+| `2n * ether` / `7n * days` / `"0xa9059cbb" as Bytes4` | `2 ether` / `7 days` / `0xa9059cbb` |
+| `to.call({ value: v }, data)` / `abi.decode<[Address, bigint]>(data)` | `to.call{value: v}(data)` / `abi.decode(data, (address, uint256))` |
+
+The complete mapping, including what is not supported yet (libraries, function types, overloading, …), is in [docs/details.md — Solidity side by side](./docs/details.md#solidity-side-by-side). Anything with no Solidity counterpart, such as `switch`, `Math.max` or a decorator Scriipture doesn't know, is reported at your line instead of being dropped or passed through to solc.
+
 ---
 
 ## Quickstart
@@ -98,6 +227,8 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 
 **No Solidity required.** Write in the language and types you already use. What comes out the other side is readable Solidity, not bytecode.
 
+**Solidity, construct for construct.** Interfaces, abstract contracts, `virtual` / `override`, modifiers, `receive` / `fallback`, tuples, `try` / `catch`, `unchecked`, custom errors, units and explicit conversions all have a TypeScript spelling that type-checks, and a construct with no Solidity counterpart is an error at your line rather than a surprise from solc. The full mapping is in [docs/details.md — Solidity side by side](./docs/details.md#solidity-side-by-side).
+
 **Nine verifiers gate every deploy.** `secure-deploy` refuses to ship unless all of them pass. Security is the default, not a plugin you remember to install.
 
 **Private keys stay off disk.** The CLI opens a local bridge and you sign in your browser wallet, exactly like any web app. Local hot wallets are available when you want them, but they're opt-in.
@@ -116,7 +247,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 
 | # | Gate | Catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 26 rules |
+| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 27 rules |
 | 2 | solc | syntax and type errors |
 | 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — needs a native `solc` built with a Horn solver (`scriipture doctor` tells you whether yours is; the version number does not). Recorded as skipped, never as clean, when no solver can run |
 | 4 | Mythril | symbolic execution (opt-in via `--deep`) |
@@ -157,7 +288,7 @@ Deployed contracts auto-verify on the matching Etherscan-family explorer when an
 | `doctor [--fix]` | Check the environment; `--fix` installs what's missing |
 | `init [dir]` | Scaffold a project — contracts, config, tsconfig, scripts |
 | `build <input>` | Transpile TypeScript → Solidity (optimizer on by default) |
-| `validate <input>` | Static checks, 26 native rules |
+| `validate <input>` | Static checks, 27 native rules |
 | `verify <input>` | The full 9-gate pipeline |
 | `compile <input>` | solc → ABI + bytecode |
 | `deploy <Contract> -n <net>` | Deploy via browser wallet, auto-verify source |
@@ -188,6 +319,8 @@ optimizeProgram(program);
 const [{ solidity }] = emitProgram(program);
 console.log(solidity);
 ```
+
+`emitProgram` returns one file per contract, in declaration order, followed by one per interface the contracts use (`kind: "interface"`). Write them all side by side, because a contract imports its interfaces from `./<Name>.sol`.
 
 ---
 

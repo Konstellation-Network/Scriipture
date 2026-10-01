@@ -1,21 +1,12 @@
 import type { IRContract } from "../ir/types";
-import { walkStatements } from "./passes";
-import type { OptimizationChange } from "./passes";
+import { stateWrites } from "./walk";
+import type { OptimizationChange, OptimizeOptions } from "./passes";
 
-export function constantPass(contract: IRContract): OptimizationChange[] {
+export function constantPass(contract: IRContract, options: OptimizeOptions = {}): OptimizationChange[] {
   const changes: OptimizationChange[] = [];
 
-  const assignedAnywhere = new Set<string>();
-  for (const fn of contract.functions) {
-    walkStatements(fn.body, (stmt) => {
-      if (stmt.kind === "expression" && stmt.expr.kind === "assign") {
-        const lhs = stmt.expr.left;
-        if (lhs.kind === "member" && lhs.object.kind === "this") {
-          assignedAnywhere.add(lhs.property);
-        }
-      }
-    });
-  }
+  const assignedAnywhere = new Set<string>(options.writtenByDerived);
+  for (const fn of contract.functions) for (const name of stateWrites(fn.body)) assignedAnywhere.add(name);
 
   for (const v of contract.stateVars) {
     if (v.type.kind !== "primitive") continue;

@@ -1,37 +1,23 @@
-import type { IRContract, IRStatement } from "../ir/types";
-import { walkStatements } from "./passes";
-import type { OptimizationChange } from "./passes";
+import type { IRContract } from "../ir/types";
+import { stateWrites } from "./walk";
+import { isValueType } from "../mapper/types";
+import type { OptimizationChange, OptimizeOptions } from "./passes";
 
-export function immutablePass(contract: IRContract): OptimizationChange[] {
+export function immutablePass(contract: IRContract, options: OptimizeOptions = {}): OptimizationChange[] {
   const changes: OptimizationChange[] = [];
   const ctor = contract.functions.find((f) => f.isConstructor);
   if (!ctor) return changes;
 
-  const assignedInCtor = new Set<string>();
-  walkStatements(ctor.body, (stmt) => {
-    if (stmt.kind === "expression" && stmt.expr.kind === "assign") {
-      const lhs = stmt.expr.left;
-      if (lhs.kind === "member" && lhs.object.kind === "this") {
-        assignedInCtor.add(lhs.property);
-      }
-    }
-  });
-
-  const assignedElsewhere = new Set<string>();
+  const assignedInCtor = stateWrites(ctor.body);
+  const assignedElsewhere = new Set<string>(options.writtenByDerived);
   for (const fn of contract.functions) {
     if (fn.isConstructor) continue;
-    walkStatements(fn.body, (stmt) => {
-      if (stmt.kind === "expression" && stmt.expr.kind === "assign") {
-        const lhs = stmt.expr.left;
-        if (lhs.kind === "member" && lhs.object.kind === "this") {
-          assignedElsewhere.add(lhs.property);
-        }
-      }
-    });
+    for (const name of stateWrites(fn.body)) assignedElsewhere.add(name);
   }
 
   for (const v of contract.stateVars) {
-    if (v.type.kind !== "primitive") continue;
+    // Solidity allows `immutable` on value types only: not `string` or `bytes`.
+    if (!isValueType(v.type)) continue;
     if (v.mutability) continue;
     if (assignedInCtor.has(v.name) && !assignedElsewhere.has(v.name)) {
       v.mutability = "immutable";

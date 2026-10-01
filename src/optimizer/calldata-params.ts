@@ -39,6 +39,9 @@ export function calldataParams(contract: IRContract): OptimizationChange[] {
   for (const fn of contract.functions) {
     if (fn.isConstructor) continue;
     if (fn.isAssembly) continue;
+    // A modifier's parameters cannot be calldata, and an abstract function's
+    // locations must match whatever overrides it, which this pass cannot see.
+    if (fn.special || fn.isAbstract) continue;
 
     // Only the outside world calls this function, so every argument arrives in calldata.
     const visibility = resolveFunctionDecorators(fn.decorators).visibility ?? "public";
