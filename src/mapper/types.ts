@@ -41,6 +41,13 @@ export function solidityType(type: IRType, location: "storage" | "memory" | "cal
     case "tuple":
       // Only meaningful in a `returns (…)` list or a tuple declaration; each part takes the location.
       return type.elements.map((t) => solidityType(t, location)).join(", ");
+    case "function": {
+      // A value type: no data location, whatever the slot asks for.
+      const params = type.params.map((t) => solidityType(t, "memory")).join(", ");
+      const mut = type.mutability ? ` ${type.mutability}` : "";
+      const rets = type.returns.length > 0 ? ` returns (${type.returns.map((t) => solidityType(t, "memory")).join(", ")})` : "";
+      return `function (${params}) ${type.visibility}${mut}${rets}`;
+    }
     case "custom":
       return CUSTOM_TYPE_ALIASES[type.name] ?? type.name;
   }
@@ -54,7 +61,7 @@ export function sameType(a: IRType | undefined, b: IRType | undefined): boolean 
 }
 
 export function isValueType(type: IRType): boolean {
-  if (type.kind === "enum") return true;
+  if (type.kind === "enum" || type.kind === "function") return true;
   if (type.kind !== "primitive") return false;
   return type.name !== "string" && type.name !== "bytes" && type.name !== "void";
 }

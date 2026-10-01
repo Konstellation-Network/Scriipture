@@ -18,12 +18,15 @@ import type {
   IRStatement,
   IRStructDecl,
   IRCatchClause,
+  IRFileScope,
   IRSuperCall,
   IRType,
+  IRValueTypeDecl,
   SourceLocation,
 } from "../ir/types";
 import { walkStatements, walkExpressionsInStatement } from "../optimizer/walk";
 import { SUPPORTED_ASSIGN_OPS, SUPPORTED_BINARY_OPS } from "../mapper/expressions";
+import { inferType } from "../mapper/infer";
 
 export interface ParseDiagnostic {
   message: string;
@@ -36,14 +39,14 @@ export interface ParseResult {
 }
 
 export function parseContractFiles(filePaths: string[]): ParseResult {
-  const program: IRProgram = { contracts: [], interfaces: [] };
+  const program: IRProgram = { contracts: [], interfaces: [], files: [] };
   const diagnostics: ParseDiagnostic[] = [];
 
   for (const filePath of filePaths) {
     const absPath = path.resolve(filePath);
     const source = fs.readFileSync(absPath, "utf8");
     const sourceFile = ts.createSourceFile(absPath, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
-    const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics, structs: new Map(), enums: new Map(), interfaceNames: new Set() };
+    const ctx: ParseContext = { sourceFile, filePath: absPath, diagnostics, structs: new Map(), enums: new Map(), valueTypes: new Map(), interfaceNames: new Set() };
 
     // Structs and enums are declared at file level, next to the contract class,
     // and may be referenced before they are declared -- by the class, and by
@@ -52,6 +55,13 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
     // opaque `custom` type instead of a struct.
     const structNodes: Array<{ name: string; members: ts.NodeArray<ts.TypeElement>; node: ts.Node }> = [];
     const interfaceNodes: ts.InterfaceDeclaration[] = [];
+    // Value types first: a struct field or an interface may be one.
+    sourceFile.forEachChild((node) => {
+      if (ts.isTypeAliasDeclaration(node)) {
+        const vt = parseValueTypeDecl(node, ctx);
+        if (vt) ctx.valueTypes.set(vt.name, vt);
+      }
+    });
     sourceFile.forEachChild((node) => {
       if (ts.isEnumDeclaration(node)) {
         const en = parseEnumDecl(node, ctx);
@@ -62,7 +72,7 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
         ctx.interfaceNames.add(node.name.text);
       } else if (ts.isInterfaceDeclaration(node)) {
         structNodes.push({ name: node.name.text, members: node.members, node });
-      } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+      } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type) && !ctx.valueTypes.has(node.name.text)) {
         structNodes.push({ name: node.name.text, members: node.type.members, node });
       }
     });
@@ -80,6 +90,25 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
       }
     }
 
+    const scope: IRFileScope = {
+      sourceFile: absPath,
+      functions: [],
+      constants: [],
+      structs: Array.from(ctx.structs.values()),
+      enums: Array.from(ctx.enums.values()),
+      valueTypes: Array.from(ctx.valueTypes.values()),
+    };
+    sourceFile.forEachChild((node) => {
+      if (ts.isFunctionDeclaration(node) && !hasModifier(node, ts.SyntaxKind.DeclareKeyword)) {
+        const fn = parseFreeFunction(node, ctx);
+        if (fn) scope.functions.push(fn);
+      } else if (ts.isVariableStatement(node) && !hasModifier(node, ts.SyntaxKind.DeclareKeyword)) {
+        scope.constants.push(...parseFileConstants(node, ctx));
+      }
+    });
+    inferFreeFunctionMutability(scope.functions);
+    resolveStructLiteralsIn(scope.functions, scope.constants, ctx);
+
     sourceFile.forEachChild((node) => {
       if (ts.isClassDeclaration(node) && node.name) {
         const contract = parseClass(node, ctx);
@@ -87,9 +116,44 @@ export function parseContractFiles(filePaths: string[]): ParseResult {
         program.contracts.push(contract);
       }
     });
+    for (const iface of program.interfaces!) {
+      if (iface.sourceFile !== absPath) continue;
+      iface.structs = scope.structs;
+      iface.enums = scope.enums;
+      iface.valueTypes = scope.valueTypes;
+    }
+    program.files!.push(scope);
   }
 
+  applyOverloadNames(program);
   return { program, diagnostics };
+}
+
+/**
+ * `@overload("transfer") transferWithData(…)` is emitted as `transfer`, so a
+ * call to it by its TS name must be too: `this.transferWithData(…)` →
+ * `transfer(…)`, and the same through `super` or a contract reference.
+ */
+function applyOverloadNames(program: IRProgram): void {
+  const renames = new Map<string, string>();
+  for (const c of program.contracts) for (const f of c.functions) if (f.tsName) renames.set(f.tsName, f.name);
+  if (renames.size === 0) return;
+  const rename = (e: IRExpression): void => {
+    if (e.kind === "call" && e.callee.kind === "member") {
+      const to = renames.get(e.callee.property);
+      if (to) e.callee.property = to;
+    }
+  };
+  for (const c of program.contracts) {
+    for (const f of c.functions) {
+      walkStatements(f.body, (st) => walkExpressionsInStatement(st, rename));
+      for (const d of f.decorators) for (const a of d.args) walkExprTree(a, rename);
+    }
+    for (const v of c.stateVars) if (v.initializer) walkExprTree(v.initializer, rename);
+  }
+  for (const scope of program.files ?? []) {
+    for (const f of scope.functions) walkStatements(f.body, (st) => walkExpressionsInStatement(st, rename));
+  }
 }
 
 interface ParseContext {
@@ -100,10 +164,14 @@ interface ParseContext {
   structs: Map<string, IRStructDecl>;
   /** File-level `enum` declarations, by name. */
   enums: Map<string, IREnumDecl>;
+  /** File-level `type X = ValueType<U, "X">` declarations, by name. */
+  valueTypes: Map<string, IRValueTypeDecl>;
   /** File-level method-only `interface` declarations, which become Solidity interfaces. */
   interfaceNames: Set<string>;
   /** Declared return type of the method being parsed; `return [a, b]` is a tuple only against a tuple type. */
   returnType?: IRType;
+  /** Parsing the members of a `@library` class, whose functions are `static`. */
+  inLibrary?: boolean;
 }
 
 function loc(node: ts.Node, ctx: ParseContext): SourceLocation {
@@ -129,10 +197,32 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
   const functions: IRFunction[] = [];
   const events: IREventDecl[] = [];
   const errors: IRErrorDecl[] = [];
+  const classDecorators = parseDecorators(cls, ctx);
+  const isLibrary = classDecorators.some((d) => d.name === "library");
+  const usingFor = (ts.getDecorators(cls) ?? [])
+    .filter((d) => (ts.isCallExpression(d.expression) ? d.expression.expression : d.expression).getText(ctx.sourceFile) === "using")
+    .flatMap((d) => parseUsing(d, ctx));
+  for (const d of classDecorators) {
+    if (d.name !== "library" && d.name !== "using") {
+      ctx.diagnostics.push({ message: `@${d.name} on class ${name} is not a class decorator Scriipture knows (@library, @using(Lib))`, loc: loc(cls, ctx) });
+    }
+  }
+  if (isLibrary && (bases.length > 0 || interfaces.length > 0)) {
+    ctx.diagnostics.push({ message: `library ${name} cannot extend or implement anything; Solidity libraries have no inheritance`, loc: loc(cls, ctx) });
+  }
+  const libraryCtx: ParseContext = isLibrary ? { ...ctx, inLibrary: true } : ctx;
 
   for (const member of cls.members) {
     if (ts.isPropertyDeclaration(member)) {
-      stateVars.push(parseStateVar(member, ctx));
+      const v = parseStateVar(member, libraryCtx);
+      if (isLibrary) {
+        // A library has no storage of its own: only constants.
+        if (!hasModifier(member, ts.SyntaxKind.ReadonlyKeyword) || !v.initializer) {
+          ctx.diagnostics.push({ message: `library ${name} cannot hold state; "${v.name}" must be \`static readonly\` with a value, which makes it a constant`, loc: loc(member, ctx) });
+        }
+        v.mutability = "constant";
+      }
+      stateVars.push(v);
     } else if (ts.isMethodDeclaration(member)) {
       // @event members declare a Solidity event rather than a function; the
       // method body exists only to satisfy TypeScript and is discarded.
@@ -141,9 +231,10 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
       } else if (hasDecorator(member, "error", ctx)) {
         errors.push(parseErrorDecl(member, ctx));
       } else {
-        functions.push(parseMethod(member, ctx));
+        functions.push(parseMethod(member, libraryCtx));
       }
     } else if (ts.isConstructorDeclaration(member)) {
+      if (isLibrary) ctx.diagnostics.push({ message: `library ${name} cannot have a constructor`, loc: loc(member, ctx) });
       functions.push(parseConstructor(member, ctx));
     } else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
       // Dropping these silently removed code, and the `constant` pass then saw
@@ -162,6 +253,8 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
 
   return {
     name,
+    kind: isLibrary ? "library" : undefined,
+    usingFor: usingFor.length > 0 ? usingFor : undefined,
     isAbstract: hasModifier(cls, ts.SyntaxKind.AbstractKeyword) || undefined,
     bases,
     interfaces: interfaces.length > 0 ? interfaces : undefined,
@@ -173,10 +266,26 @@ function parseClass(cls: ts.ClassDeclaration, ctx: ParseContext): IRContract {
     // is emitted to its own .sol, so nothing collides.
     structs: Array.from(ctx.structs.values()),
     enums: Array.from(ctx.enums.values()),
+    valueTypes: Array.from(ctx.valueTypes.values()),
     sourceFile: ctx.filePath,
     natspec: extractNatspec(cls, ctx),
     loc: loc(cls, ctx),
   };
+}
+
+/**
+ * `@using(Lib)` → `using Lib for *;`, `@using<bigint>(Lib)` → `using Lib for uint256;`.
+ * The library is named by its class, so TypeScript checks it exists.
+ */
+function parseUsing(d: ts.Decorator, ctx: ParseContext): Array<{ library: string; type?: IRType }> {
+  const call = ts.isCallExpression(d.expression) ? d.expression : undefined;
+  const lib = call?.arguments[0];
+  if (!call || call.arguments.length !== 1 || !lib || !ts.isIdentifier(lib)) {
+    ctx.diagnostics.push({ message: "`@using` takes one library class: `@using(SafeMath)`, or `@using<bigint>(SafeMath)` to attach it to one type", loc: loc(d, ctx) });
+    return [];
+  }
+  const typeArg = call.typeArguments?.[0];
+  return [{ library: lib.text, type: typeArg ? parseType(typeArg, ctx) : undefined }];
 }
 
 function extractNatspec(node: ts.Node, ctx: ParseContext): string[] | undefined {
@@ -256,6 +365,18 @@ function parseErrorDecl(method: ts.MethodDeclaration, ctx: ParseContext): IRErro
 
 function parseEvent(method: ts.MethodDeclaration, ctx: ParseContext): IREventDecl {
   const name = method.name.getText(ctx.sourceFile);
+  const decorator = parseDecorators(method, ctx).find((d) => d.name === "event")!;
+  // `@event({ anonymous: true })`: the only option an event has.
+  const [opts] = decorator.args;
+  let anonymous = false;
+  if (opts) {
+    const flag = opts.kind === "object" && opts.properties.length === 1 ? opts.properties[0] : undefined;
+    if (flag?.name === "anonymous" && flag.value.kind === "literal" && flag.value.literalType === "boolean") {
+      anonymous = flag.value.value === "true";
+    } else {
+      ctx.diagnostics.push({ message: `@event takes no arguments, or \`{ anonymous: true }\``, loc: loc(method, ctx) });
+    }
+  }
   const params: IREventParam[] = method.parameters.map((p) => {
     const pname = p.name.getText(ctx.sourceFile);
     const { type, indexed } = p.type
@@ -263,7 +384,7 @@ function parseEvent(method: ts.MethodDeclaration, ctx: ParseContext): IREventDec
       : { type: { kind: "custom", name: "unknown" } as IRType, indexed: false };
     return { name: pname, type, indexed };
   });
-  return { name, params, natspec: extractNatspec(method, ctx), loc: loc(method, ctx) };
+  return { name, params, anonymous: anonymous || undefined, natspec: extractNatspec(method, ctx), loc: loc(method, ctx) };
 }
 
 function cap(s: string): string {
@@ -306,12 +427,17 @@ function parseStateVar(prop: ts.PropertyDeclaration, ctx: ParseContext): IRState
   const type = prop.type ? parseType(prop.type, ctx) : { kind: "custom", name: "unknown" } as IRType;
   const decorators = parseDecorators(prop, ctx);
   const initializer = prop.initializer ? parseExpression(prop.initializer, ctx) : undefined;
-  reportStatic(prop, name, ctx);
+  if (!ctx.inLibrary) reportStatic(prop, name, ctx);
+  const transient = decorators.some((d) => d.name === "transient");
+  if (transient && initializer) {
+    ctx.diagnostics.push({ message: `transient "${name}" cannot have an initializer: transient storage starts every transaction at the type's default`, loc: loc(prop, ctx) });
+  }
   return {
     name,
     type,
     decorators,
     initializer,
+    transient: transient || undefined,
     // A decorator wins over a keyword, as it does on methods.
     visibility: (decorators.find((d) => d.name === "public" || d.name === "private" || d.name === "internal")?.name as IRStateVar["visibility"]) ?? visibilityModifier(prop, ctx),
     natspec: extractNatspec(prop, ctx),
@@ -347,7 +473,13 @@ function parseMethod(method: ts.MethodDeclaration, ctx: ParseContext): IRFunctio
     ...(modifier ? [{ name: modifier, args: [] }] : []),
     ...parseDecorators(method, ctx),
   ];
-  reportStatic(method, name, ctx);
+  if (ctx.inLibrary) {
+    if (!hasModifier(method, ts.SyntaxKind.StaticKeyword)) {
+      ctx.diagnostics.push({ message: `library function "${name}" must be \`static\`: a library is never instantiated, so it is called as \`Lib.${name}(…)\``, loc: loc(method, ctx) });
+    }
+  } else {
+    reportStatic(method, name, ctx);
+  }
   const isAbstract = !method.body && hasModifier(method, ts.SyntaxKind.AbstractKeyword);
   // TypeScript rejects a decorator on an abstract method (TS1249), so its
   // mutability comes from the doc comment, as on an interface method.
@@ -380,8 +512,22 @@ function parseMethod(method: ts.MethodDeclaration, ctx: ParseContext): IRFunctio
     assemblyBody = extractAssemblyBody(method.body, ctx);
   }
 
+  // `@overload("transfer") transferWithData(…)`: TS cannot give two methods
+  // one name, Solidity can. The function is emitted under the given name.
+  const overload = decorators.find((d) => d.name === "overload");
+  let solName = name;
+  if (overload) {
+    const [arg] = overload.args;
+    if (overload.args.length === 1 && arg?.kind === "literal" && arg.literalType === "string" && /^[A-Za-z_$][\w$]*$/.test(arg.value)) {
+      solName = arg.value;
+    } else {
+      ctx.diagnostics.push({ message: `\`@overload\` takes the Solidity name as a string: \`@overload("transfer") ${name}(…)\``, loc: loc(method, ctx) });
+    }
+  }
+
   return {
-    name,
+    name: solName,
+    tsName: solName !== name ? name : undefined,
     isConstructor: false,
     special,
     isAbstract: isAbstract || undefined,
@@ -441,6 +587,7 @@ function parseConstructor(ctor: ts.ConstructorDeclaration, ctx: ParseContext): I
   return {
     name: "constructor",
     isConstructor: true,
+    payable: interfaceMutability(ctor, ctx) === "payable" || undefined,
     decorators: [],
     params,
     returnType: { kind: "primitive", name: "void" },
@@ -506,6 +653,145 @@ function parseDecorators(node: ts.HasDecorators, ctx: ParseContext): IRDecorator
     const name = d.expression.getText(ctx.sourceFile);
     return { name: DECORATOR_ALIASES[name] ?? name, args: [] };
   });
+}
+
+/**
+ * `type Price = ValueType<Uint128, "Price">` → `type Price is uint128;`. The
+ * string names the brand that keeps a `Price` from mixing with a plain
+ * `Uint128` (or another value type over one) in TypeScript, as Solidity keeps
+ * them apart; it must match the alias name. Anything else is not a value type.
+ */
+function parseValueTypeDecl(node: ts.TypeAliasDeclaration, ctx: ParseContext): IRValueTypeDecl | undefined {
+  const t = node.type;
+  if (!ts.isTypeReferenceNode(t) || t.typeName.getText(ctx.sourceFile) !== "ValueType") return undefined;
+  const name = node.name.text;
+  const [underlyingNode, brand] = t.typeArguments ?? [];
+  if (!underlyingNode || t.typeArguments!.length !== 2) {
+    ctx.diagnostics.push({ message: `${name}: write \`ValueType<Underlying, "${name}">\``, loc: loc(node, ctx) });
+    return undefined;
+  }
+  if (!brand || !ts.isLiteralTypeNode(brand) || !ts.isStringLiteral(brand.literal) || brand.literal.text !== name) {
+    ctx.diagnostics.push({ message: `${name}: the second argument of ValueType must be the type's own name, "${name}", so two value types over the same type stay distinct`, loc: loc(node, ctx) });
+  }
+  const underlying = parseType(underlyingNode, ctx);
+  if (underlying.kind !== "primitive" || ["string", "bytes", "void"].includes(underlying.name)) {
+    ctx.diagnostics.push({ message: `${name}: a user-defined value type wraps an elementary value type (an integer, BytesN, Address or boolean), not ${underlyingNode.getText(ctx.sourceFile)}`, loc: loc(node, ctx) });
+  }
+  return { name, underlying, natspec: extractNatspec(node, ctx), loc: loc(node, ctx) };
+}
+
+/**
+ * `export function f(a: bigint): bigint { … }` at file level → a Solidity free
+ * function, which every contract in the file can call. Its mutability comes
+ * from a `/** @view *\/` or `/** @pure *\/` doc tag, else from what its body
+ * touches (see inferFreeFunctionMutability).
+ */
+function parseFreeFunction(node: ts.FunctionDeclaration, ctx: ParseContext): IRFunction | undefined {
+  if (!node.name) return undefined;
+  const name = node.name.text;
+  if (!node.body) {
+    ctx.diagnostics.push({ message: `function "${name}" has no body; Solidity has no overload signatures, so declare it \`declare function\` if it is a type-only shim`, loc: loc(node, ctx) });
+    return undefined;
+  }
+  if (node.asteriskToken || hasModifier(node, ts.SyntaxKind.AsyncKeyword)) {
+    ctx.diagnostics.push({ message: `function "${name}" is a generator or async; Solidity has neither`, loc: loc(node, ctx) });
+  }
+  const returnType = node.type ? parseType(node.type, ctx) : { kind: "primitive", name: "void" } as IRType;
+  const tag = interfaceMutability(node, ctx);
+  ctx.returnType = returnType;
+  const body = parseBlockBody(node.body, ctx);
+  ctx.returnType = undefined;
+  return {
+    name,
+    isConstructor: false,
+    decorators: tag ? [{ name: tag, args: [] }] : [],
+    params: node.parameters.map((p) => parseParam(p, ctx)),
+    returnType,
+    body,
+    natspec: extractNatspec(node, ctx),
+    loc: loc(node, ctx),
+  };
+}
+
+/**
+ * `const MAX = 100n;` at file level → `uint256 constant MAX = 100;`. Solidity
+ * allows only constants there, so `let` is reported rather than turned into
+ * something that cannot change.
+ */
+function parseFileConstants(stmt: ts.VariableStatement, ctx: ParseContext): IRStateVar[] {
+  const out: IRStateVar[] = [];
+  const isConst = (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
+  for (const d of stmt.declarationList.declarations) {
+    if (!ts.isIdentifier(d.name)) {
+      ctx.diagnostics.push({ message: "a file-level destructuring declaration has no Solidity equivalent; declare each constant on its own", loc: loc(d, ctx) });
+      continue;
+    }
+    const name = d.name.text;
+    if (!isConst) {
+      ctx.diagnostics.push({ message: `file-level "${name}" is not \`const\`; Solidity allows only constants outside a contract — move it into the class as state`, loc: loc(d, ctx) });
+      continue;
+    }
+    if (!d.initializer) {
+      ctx.diagnostics.push({ message: `file-level constant "${name}" needs a value`, loc: loc(d, ctx) });
+      continue;
+    }
+    const initializer = parseExpression(d.initializer, ctx);
+    out.push({
+      name,
+      type: d.type ? parseType(d.type, ctx) : inferType(initializer, {}) ?? { kind: "primitive", name: "uint256" },
+      decorators: [],
+      initializer,
+      mutability: "constant",
+      natspec: extractNatspec(stmt, ctx),
+      loc: loc(d, ctx),
+    });
+  }
+  return out;
+}
+
+/** What a function reading the chain or other contracts uses: it cannot be `pure`. */
+const IMPURE_GLOBALS = new Set(["msg", "block", "tx", "gasleft", "blockhash", "blobhash"]);
+const ADDRESS_STATE = new Set(["balance", "code", "codehash", "call", "delegatecall", "staticcall", "transfer", "send"]);
+
+/**
+ * A free function with no doc tag is `pure` when nothing in it reads the chain
+ * -- no `msg` / `block` / `tx`, no address members, no call into another
+ * contract -- and every free function it calls is pure too. Otherwise it is
+ * left without a mutability: solc then says if it could be `view`, which a
+ * guess here could not get right for a call that writes.
+ */
+function inferFreeFunctionMutability(fns: IRFunction[]): void {
+  const pure = new Set<string>();
+  const untagged = fns.filter((f) => !f.decorators.some((d) => d.name === "view" || d.name === "pure" || d.name === "payable"));
+  for (const f of fns) if (f.decorators.some((d) => d.name === "pure")) pure.add(f.name);
+  const freeNames = new Set(fns.map((f) => f.name));
+  const candidates = new Set(untagged.map((f) => f.name));
+  const readsChain = (f: IRFunction): boolean => {
+    let found = false;
+    walkStatements(f.body, (st) => walkExpressionsInStatement(st, (e) => {
+      if (e.kind === "identifier" && IMPURE_GLOBALS.has(e.name)) found = true;
+      if (e.kind === "member" && ADDRESS_STATE.has(e.property)) found = true;
+      if (e.kind === "new" && !e.type) found = true;
+      if (e.kind === "call" && e.callee.kind === "member" && e.callee.object.kind === "call") found = true; // I(addr).f()
+      if (e.kind === "call" && e.callee.kind === "identifier" && freeNames.has(e.callee.name) && !pure.has(e.callee.name) && !candidates.has(e.callee.name)) found = true;
+    }));
+    return found;
+  };
+  for (const f of untagged) if (readsChain(f)) candidates.delete(f.name);
+  // A candidate calling a free function that turned out impure is impure too.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const f of untagged) {
+      if (!candidates.has(f.name)) continue;
+      let callsImpure = false;
+      walkStatements(f.body, (st) => walkExpressionsInStatement(st, (e) => {
+        if (e.kind === "call" && e.callee.kind === "identifier" && freeNames.has(e.callee.name) && !pure.has(e.callee.name) && !candidates.has(e.callee.name)) callsImpure = true;
+      }));
+      if (callsImpure) { candidates.delete(f.name); changed = true; }
+    }
+  }
+  for (const f of untagged) if (candidates.has(f.name)) f.decorators.push({ name: "pure", args: [] });
 }
 
 function parseEnumDecl(node: ts.EnumDeclaration, ctx: ParseContext): IREnumDecl {
@@ -606,7 +892,7 @@ const INTERFACE_MUTABILITY = /(?:^|\s)@(view|pure|payable)\b/;
  * `f(): T; /** @view *\/ g(): U;` as a trailing comment of `f` and gives `g`
  * no JSDoc at all.
  */
-function interfaceMutability(m: ts.TypeElement | ts.MethodDeclaration, ctx: ParseContext): string | undefined {
+function interfaceMutability(m: ts.Node, ctx: ParseContext): string | undefined {
   const trivia = ctx.sourceFile.text.slice(m.getFullStart(), m.getStart(ctx.sourceFile));
   const docs = trivia.match(/\/\*\*[\s\S]*?\*\//g);
   const last = docs?.[docs.length - 1];
@@ -655,6 +941,8 @@ function sizedPrimitive(name: string, node: ts.Node, ctx: ParseContext): IRType 
   return undefined;
 }
 
+const FUNCTION_TYPE_WRAPPERS = new Set(["External", "View", "Pure", "Payable"]);
+
 function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
   if (ts.isTypeReferenceNode(typeNode)) {
     const name = typeNode.typeName.getText(ctx.sourceFile);
@@ -675,6 +963,16 @@ function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
       }
       return { kind: "array", element: parseType(args[0]!, ctx), length: len };
     }
+    if (FUNCTION_TYPE_WRAPPERS.has(name) && args.length === 1) {
+      // `External<(a: bigint) => boolean>`, `View<…>`, `Pure<…>`, `Payable<…>`, composable.
+      const inner = parseType(args[0]!, ctx);
+      if (inner.kind !== "function") {
+        ctx.diagnostics.push({ message: `${name}<…> wraps a function type, such as \`${name}<(a: bigint) => bigint>\``, loc: loc(typeNode, ctx) });
+        return inner;
+      }
+      if (name === "External") return { ...inner, visibility: "external" };
+      return { ...inner, mutability: name.toLowerCase() as "view" | "pure" | "payable" };
+    }
     if (name === "Address") return { kind: "primitive", name: "address" };
     if (name === "Bytes") return { kind: "primitive", name: "bytes" };
     const sized = sizedPrimitive(name, typeNode, ctx);
@@ -688,7 +986,17 @@ function parseType(typeNode: ts.TypeNode, ctx: ParseContext): IRType {
   }
   if (ts.isTupleTypeNode(typeNode)) {
     // `[bigint, boolean]` → `(uint256, bool)`: several return values.
-    return { kind: "tuple", elements: typeNode.elements.map((t) => parseType(ts.isNamedTupleMember(t) ? t.type : t, ctx)) };
+    // `[amount: bigint, ok: boolean]` names them: `returns (uint256 amount, bool ok)`.
+    const elements = typeNode.elements.map((t) => parseType(ts.isNamedTupleMember(t) ? t.type : t, ctx));
+    const names = typeNode.elements.map((t) => (ts.isNamedTupleMember(t) ? t.name.text : undefined));
+    return names.some(Boolean) ? { kind: "tuple", elements, names } : { kind: "tuple", elements };
+  }
+  if (ts.isFunctionTypeNode(typeNode)) {
+    // `(a: bigint) => boolean` → `function (uint256) internal returns (bool)`.
+    const ret = parseType(typeNode.type, ctx);
+    const returns = ret.kind === "primitive" && ret.name === "void" ? [] : ret.kind === "tuple" ? ret.elements : [ret];
+    if (typeNode.typeParameters?.length) ctx.diagnostics.push({ message: "a generic function type has no Solidity equivalent", loc: loc(typeNode, ctx) });
+    return { kind: "function", params: typeNode.parameters.map((p) => (p.type ? parseType(p.type, ctx) : { kind: "custom", name: "unknown" })), returns, visibility: "internal" };
   }
   if (ts.isParenthesizedTypeNode(typeNode)) return parseType(typeNode.type, ctx);
   switch (typeNode.kind) {
@@ -831,9 +1139,42 @@ function parseTry(stmt: ts.TryStatement, ctx: ParseContext, l: SourceLocation): 
 
   const cc = stmt.catchClause;
   const param = cc.variableDeclaration && ts.isIdentifier(cc.variableDeclaration.name) ? cc.variableDeclaration.name.text : undefined;
-  const catchBody = parseBlockBody(cc.block, ctx);
-  const catches: IRCatchClause[] = [param ? { kind: "bytes", param, body: catchBody } : { kind: "any", body: catchBody }];
+  // `catchError((reason) => { … })` and `catchPanic((code) => { … })` in the
+  // catch block are Solidity's `catch Error(string memory reason)` and
+  // `catch Panic(uint256 code)`; what is left is the catch-all clause.
+  const typed: IRCatchClause[] = [];
+  const remainder: ts.Statement[] = [];
+  for (const st of cc.block.statements) {
+    const clause = typedCatchClause(st, ctx);
+    if (clause) typed.push(clause);
+    else remainder.push(st);
+  }
+  const catchBody = remainder.map((st) => parseStatement(st, ctx));
+  const catches: IRCatchClause[] = [...typed];
+  // With typed clauses, an empty remainder and no bound `e` means "let any
+  // other failure revert", which is Solidity's meaning of leaving out `catch { }`.
+  if (typed.length === 0 || param || catchBody.length > 0) {
+    catches.push(param ? { kind: "bytes", param, body: catchBody } : { kind: "any", body: catchBody });
+  }
   return { kind: "try", call, returns, body, catches, loc: l };
+}
+
+/** `catchError((reason) => { … });` / `catchPanic((code) => { … });` as a statement of a catch block. */
+function typedCatchClause(st: ts.Statement, ctx: ParseContext): IRCatchClause | undefined {
+  if (!ts.isExpressionStatement(st) || !ts.isCallExpression(st.expression) || !ts.isIdentifier(st.expression.expression)) return undefined;
+  const which = st.expression.expression.text;
+  if (which !== "catchError" && which !== "catchPanic") return undefined;
+  const [fn] = st.expression.arguments;
+  if (st.expression.arguments.length !== 1 || !fn || !(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || !ts.isBlock(fn.body) || fn.parameters.length > 1) {
+    ctx.diagnostics.push({ message: `\`${which}\` takes one block-bodied function: \`${which}((${which === "catchError" ? "reason" : "code"}) => { … })\``, loc: loc(st, ctx) });
+    return undefined;
+  }
+  const p = fn.parameters[0];
+  return {
+    kind: which === "catchError" ? "error" : "panic",
+    param: p && ts.isIdentifier(p.name) ? p.name.text : undefined,
+    body: parseBlockBody(fn.body, ctx),
+  };
 }
 
 /**
@@ -1257,6 +1598,19 @@ function parseCall(expr: ts.CallExpression, ctx: ParseContext): IRExpression {
         return { kind: "call", callee: { kind: "identifier", name: target.typeName.getText(ctx.sourceFile) }, args: [parseExpression(expr.arguments[0]!, ctx)] };
       }
     }
+    if (name === "create") return parseCreate(expr, ctx);
+    if (name === "wrap" || name === "unwrap") {
+      // `wrap<Price>(x)` → `Price.wrap(x)`; `unwrap(p)` → `Price.unwrap(p)`, the
+      // type taken from `p` when it is not written (see emitCall).
+      const target = typeArgs?.[0];
+      const args = expr.arguments.map((a) => parseExpression(a, ctx));
+      if (args.length !== 1) ctx.diagnostics.push({ message: `\`${name}\` takes one value`, loc: loc(expr, ctx) });
+      if (target?.kind === "custom") return { kind: "call", callee: { kind: "member", object: { kind: "identifier", name: target.name }, property: name }, args };
+      if (name === "wrap") {
+        ctx.diagnostics.push({ message: "`wrap` needs the value type it builds: `wrap<Price>(x)`", loc: loc(expr, ctx) });
+      }
+      return { kind: "call", callee: { kind: "identifier", name }, args };
+    }
     if (name === "type" && expr.arguments.length === 0 && typeArgs?.length === 1) {
       // `type<Uint64>().max`, `type<IERC20>().interfaceId`.
       return { kind: "call", callee: { kind: "identifier", name: "type" }, args: [], typeArgs };
@@ -1276,6 +1630,29 @@ function parseCall(expr: ts.CallExpression, ctx: ParseContext): IRExpression {
   const out: IRExpression = { kind: "call", callee: parseExpression(callee, ctx), args };
   if (typeArgs && typeArgs.length > 0) out.typeArgs = typeArgs;
   return out;
+}
+
+/**
+ * `create(Child, { salt, value }, a, b)` → `new Child{salt: salt, value: value}(a, b)`:
+ * a CREATE2 deployment (with `salt`) and / or one that funds the new contract
+ * (with `value`). Plain `new Child(a, b)` needs neither.
+ */
+function parseCreate(expr: ts.CallExpression, ctx: ParseContext): IRExpression {
+  const [target, opts, ...rest] = expr.arguments;
+  if (!target || !ts.isIdentifier(target) || !opts || !ts.isObjectLiteralExpression(opts)) {
+    ctx.diagnostics.push({ message: "`create` takes a contract class, an options object and the constructor arguments: `create(Child, { salt: s, value: v }, a)`", loc: loc(expr, ctx) });
+    return { kind: "raw", text: expr.getText(ctx.sourceFile) };
+  }
+  const options: Array<{ name: string; value: IRExpression }> = [];
+  for (const p of opts.properties) {
+    const key = p.name?.getText(ctx.sourceFile);
+    if ((ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && (key === "salt" || key === "value")) {
+      options.push({ name: key, value: ts.isPropertyAssignment(p) ? parseExpression(p.initializer, ctx) : { kind: "identifier", name: key } });
+    } else {
+      ctx.diagnostics.push({ message: `\`create\` options are \`salt\` and \`value\` only, not "${p.getText(ctx.sourceFile)}"`, loc: loc(p, ctx) });
+    }
+  }
+  return { kind: "new", className: target.text, args: rest.map((a) => parseExpression(a, ctx)), options: options.length > 0 ? options : undefined };
 }
 
 function parseObjectLiteral(
@@ -1306,6 +1683,11 @@ function parseObjectLiteral(
  * Nested literals take their type from the enclosing struct's field.
  */
 function resolveStructLiterals(contract: IRContract, ctx: ParseContext): void {
+  resolveStructLiteralsIn(contract.functions, contract.stateVars, ctx);
+}
+
+function resolveStructLiteralsIn(functions: IRFunction[], stateVars: IRStateVar[], ctx: ParseContext): void {
+  const contract = { functions, stateVars };
   const stateTypes = new Map(contract.stateVars.map((v) => [v.name, v.type]));
   const fnParams = new Map(contract.functions.map((f) => [f.name, f.params.map((p) => p.type)]));
 

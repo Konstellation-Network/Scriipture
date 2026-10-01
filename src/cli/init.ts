@@ -137,7 +137,7 @@ export async function initCommand(dir: string): Promise<void> {
   console.log("  npx scriipture build contracts      # transpile → out/sol/");
   console.log("  npx scriipture deploy Counter -n base-sepolia");
   console.log("");
-  console.log(pc.dim("For full docs: https://github.com/Worldstreet-Web-Services/scripture/blob/main/docs/details.md"));
+  console.log(pc.dim("For full docs: https://github.com/Konstellation-Network/Scriipture/blob/main/docs/details.md"));
 }
 
 function writeIfMissing(p: string, content: string): void {

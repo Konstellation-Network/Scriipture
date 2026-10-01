@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseContractFiles } from "../src/parser/parse";
-import { emitProgram } from "../src/emitter/emit";
+import { emitProgram, sharedDefinitions } from "../src/emitter/emit";
 import { generateFuzzHarness } from "../src/security/fuzz-gen";
 import { proofStatus } from "../src/security/invariants";
 import { parseDiagnosticsAsErrors } from "../src/validator/diagnostics";
@@ -110,4 +110,40 @@ describe("parse diagnostics reach the gates", () => {
     expect(asErrors.every((d) => d.severity === "error" && d.rule === "parse")).toBe(true);
     expect(asErrors.map((d) => d.message)).toEqual(diagnostics.map((d) => d.message));
   });
+});
+
+describe("fuzz harness for libraries, overloads and shared types", () => {
+  const { program } = parseContractFiles([path.join(ROOT, "tests/contracts/Advanced.ts")]);
+  const shared = sharedDefinitions(program).values().next().value!.typeNames;
+  const contract = (name: string) => program.contracts.find((c) => c.name === name)!;
+
+  it("has no harness for a library, which is never deployed on its own", () => {
+    expect(generateFuzzHarness(contract("MathLib"), shared)).toBeNull();
+  });
+
+  it("gives each overload its own test, and leaves file-level types unqualified", () => {
+    const s = generateFuzzHarness(contract("Advanced"), shared)!.solidity;
+    expect(s).toContain("function testFuzz_Put(uint256 a) public {");
+    expect(s).toContain("function testFuzz_Put_2(uint256 a, uint256 b) public {");
+    expect(s).toContain("Point memory p");
+    expect(s).not.toContain("Advanced.Point");
+    // A function pointer parameter is not fuzzable.
+    expect(s).not.toContain("testFuzz_ApplyTwice");
+  });
+
+  it("compiles under solc alongside the contracts", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-fuzz-adv-"));
+    const files = emitProgram(program).map((e) => {
+      const f = path.join(dir, `${e.name}.sol`);
+      fs.writeFileSync(f, e.solidity, "utf8");
+      return f;
+    });
+    const h = generateFuzzHarness(contract("Advanced"), shared)!.solidity
+      .replace('import "forge-std/Test.sol";', TEST_STUB)
+      .replace('import "../src/Advanced.sol";', 'import "./Advanced.sol";');
+    fs.writeFileSync(path.join(dir, "AdvancedFuzzAuto.sol"), h, "utf8");
+    const r = compileSolidity({ solFiles: [...files, path.join(dir, "AdvancedFuzzAuto.sol")], config: ConfigSchema.parse({}) });
+    expect(r.errors).toEqual([]);
+    expect(r.artifacts.map((a) => a.contractName)).toContain("AdvancedFuzzAuto");
+  }, 60_000);
 });

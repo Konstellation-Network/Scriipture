@@ -10,7 +10,7 @@ export function constantPass(contract: IRContract, options: OptimizeOptions = {}
 
   for (const v of contract.stateVars) {
     if (v.type.kind !== "primitive") continue;
-    if (v.mutability) continue;
+    if (v.mutability || v.transient) continue;
     if (!v.initializer) continue;
     if (v.initializer.kind !== "literal") continue;
     if (assignedAnywhere.has(v.name)) continue;

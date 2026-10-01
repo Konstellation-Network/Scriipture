@@ -340,3 +340,32 @@ export function resolveOZRoot(): string | null {
   }
   return null;
 }
+
+/**
+ * The solc version forge and Mythril should run: the configured one, raised
+ * to the lowest release every emitted `pragma solidity ^0.8.N` admits.
+ * Pinning the configured version alone fails outright once a file needs a
+ * newer compiler -- transient storage needs 0.8.28.
+ */
+export function toolSolcVersion(solidity: string[], configured = "0.8.20"): string {
+  const parse = (v: string) => v.split(".").map(Number) as [number, number, number];
+  const newer = (a: string, b: string) => {
+    const [x, y] = [parse(a), parse(b)];
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! > y[i]!;
+    return false;
+  };
+  let out = configured;
+  for (const src of solidity) {
+    for (const m of src.matchAll(/pragma solidity \^(\d+\.\d+\.\d+)\s*;/g)) if (newer(m[1]!, out)) out = m[1]!;
+  }
+  return out;
+}
+
+/**
+ * The `solc = "…"` line of a generated foundry.toml: the configured version
+ * when every source accepts it, otherwise none, so forge picks an installed
+ * compiler that satisfies the pragmas instead of downloading one exact build.
+ */
+export function foundrySolcLine(solidity: string[], configured = "0.8.20"): string {
+  return toolSolcVersion(solidity, configured) === configured ? `solc = "${configured}"\n` : "";
+}

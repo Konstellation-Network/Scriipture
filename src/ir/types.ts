@@ -33,8 +33,17 @@ export type IRType =
   | { kind: "struct"; name: string }
   /** An enum declared at file level next to the contract (TS `enum`). */
   | { kind: "enum"; name: string }
-  /** Several return values: a TS tuple return type `[bigint, boolean]` → `returns (uint256, bool)`. */
-  | { kind: "tuple"; elements: IRType[] }
+  /**
+   * Several return values: a TS tuple return type `[bigint, boolean]` → `returns (uint256, bool)`.
+   * `names` carries a labelled tuple's labels, `[amount: bigint, ok: boolean]`
+   * → `returns (uint256 amount, bool ok)`.
+   */
+  | { kind: "tuple"; elements: IRType[]; names?: Array<string | undefined> }
+  /**
+   * A function type: TS `(a: bigint) => boolean` → `function (uint256) internal returns (bool)`.
+   * `External<F>` makes it `external`; `View<F>` / `Pure<F>` / `Payable<F>` set its mutability.
+   */
+  | { kind: "function"; params: IRType[]; returns: IRType[]; visibility: "internal" | "external"; mutability?: "view" | "pure" | "payable" }
   | { kind: "custom"; name: string };
 
 export type IRExpression =
@@ -140,6 +149,8 @@ export interface IRStateVar {
   initializer?: IRExpression;
   visibility?: "public" | "private" | "internal";
   mutability?: "constant" | "immutable";
+  /** `@transient`: EIP-1153 transient storage, cleared at the end of every transaction. */
+  transient?: boolean;
   natspec?: string[];
   loc?: SourceLocation;
 }
@@ -165,6 +176,8 @@ export interface IREventParam {
 export interface IREventDecl {
   name: string;
   params: IREventParam[];
+  /** `@event({ anonymous: true })`: no topic for the signature, so up to four indexed parameters. */
+  anonymous?: boolean;
   natspec?: string[];
   loc?: SourceLocation;
 }
@@ -183,8 +196,22 @@ export interface IREnumDecl {
   loc?: SourceLocation;
 }
 
-export interface IRFunction {
+/**
+ * A user-defined value type, `type Price is uint128;`, declared in TS as
+ * `type Price = ValueType<Uint128, "Price">`.
+ */
+export interface IRValueTypeDecl {
   name: string;
+  underlying: IRType;
+  natspec?: string[];
+  loc?: SourceLocation;
+}
+
+export interface IRFunction {
+  /** The Solidity name. Differs from `tsName` when `@overload("name")` renames it. */
+  name: string;
+  /** The TS method name, when `@overload` gave the function a different Solidity name. */
+  tsName?: string;
   isConstructor: boolean;
   /**
    * A function Solidity treats specially: `receive() external payable`,
@@ -196,6 +223,12 @@ export interface IRFunction {
   isAbstract?: boolean;
   /** Written with TS `override`: always emitted `override`, even over a base Scriipture cannot see. */
   isOverride?: boolean;
+  /**
+   * A constructor tagged `/** @payable *\/`. TypeScript allows no decorator
+   * on a constructor, so the tag is the spelling; it lets `create(C, { value })`
+   * fund the new contract.
+   */
+  payable?: boolean;
   decorators: IRDecorator[];
   params: IRParam[];
   returnType: IRType;
@@ -209,6 +242,13 @@ export interface IRFunction {
 
 export interface IRContract {
   name: string;
+  /** `@library class L { static f() … }` → `library L { function f() internal … }`. */
+  kind?: "contract" | "library";
+  /**
+   * `@using(Lib)` / `@using<bigint>(Lib)` on the class → `using Lib for *;` /
+   * `using Lib for uint256;`.
+   */
+  usingFor?: Array<{ library: string; type?: IRType }>;
   /** `abstract class` → `abstract contract`. */
   isAbstract?: boolean;
   bases: string[];
@@ -220,9 +260,27 @@ export interface IRContract {
   events: IREventDecl[];
   structs: IRStructDecl[];
   enums: IREnumDecl[];
+  /** File-level `ValueType<…>` aliases, declared like structs and enums. */
+  valueTypes?: IRValueTypeDecl[];
   sourceFile: string;
   natspec?: string[];
   loc?: SourceLocation;
+}
+
+/**
+ * What a TS file declares outside any class that Solidity puts at file level:
+ * free functions (`export function f(…)`) and constants (`const MAX = 100n`).
+ * Emitted, together with any struct, enum or value type a library, an
+ * interface or one of these refers to, to a shared `<stem>.defs.sol` that the
+ * file's contracts, libraries and interfaces import.
+ */
+export interface IRFileScope {
+  sourceFile: string;
+  functions: IRFunction[];
+  constants: IRStateVar[];
+  structs: IRStructDecl[];
+  enums: IREnumDecl[];
+  valueTypes: IRValueTypeDecl[];
 }
 
 /**
@@ -233,6 +291,10 @@ export interface IRContract {
 export interface IRInterface {
   name: string;
   functions: IRFunction[];
+  /** The file's structs, enums and value types, for the ones its signatures use. */
+  structs?: IRStructDecl[];
+  enums?: IREnumDecl[];
+  valueTypes?: IRValueTypeDecl[];
   events: IREventDecl[];
   sourceFile: string;
   natspec?: string[];
@@ -243,4 +305,6 @@ export interface IRProgram {
   contracts: IRContract[];
   /** Solidity interfaces declared in this build; each is emitted to its own file. */
   interfaces?: IRInterface[];
+  /** Per-file declarations that live outside any contract. */
+  files?: IRFileScope[];
 }

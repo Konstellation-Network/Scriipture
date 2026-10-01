@@ -83,8 +83,8 @@ export async function buildCommand(input: string, opts: BuildOptions): Promise<v
   for (const c of optEmitted) {
     const out = path.join(outDir, `${c.name}.sol`);
     fs.writeFileSync(out, c.solidity, "utf8");
-    if (c.kind === "interface") {
-      console.log(pc.green(`wrote ${out}`) + pc.dim(" (interface)"));
+    if (c.kind) {
+      console.log(pc.green(`wrote ${out}`) + pc.dim(c.kind === "interface" ? " (interface)" : " (shared definitions)"));
       continue;
     }
 

@@ -6,7 +6,7 @@ import { parseContractFiles } from "../parser/parse";
 import { emitProgram } from "../emitter/emit";
 import { optimizeProgram } from "../optimizer/passes";
 import { collectTsFiles } from "../cli/parse";
-import { resolveOZRoot } from "../compiler/solc";
+import { foundrySolcLine, resolveOZRoot } from "../compiler/solc";
 import { resolveTool } from "../runtime/tool-paths";
 
 const FORGE_ROOT_DEFAULT = "out/forge";
@@ -114,6 +114,11 @@ function injectImports(sol: string, importBlock: string): string {
 }
 
 function writeFoundryToml(root: string): void {
+  // Pinned to what the sources written so far need (see toolSolcVersion).
+  const sources = ["src", "test"].flatMap((d) => {
+    const dir = path.join(root, d);
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".sol")).map((f) => fs.readFileSync(path.join(dir, f), "utf8")) : [];
+  });
   const ozRoot = resolveOZRoot();
   const ozRemap = ozRoot ? `"@openzeppelin/contracts/=${ozRoot}/",` : "";
   const toml = `[profile.default]
@@ -121,8 +126,7 @@ src = "src"
 test = "test"
 out = "out"
 libs = ["lib"]
-solc = "0.8.20"
-optimizer = true
+${foundrySolcLine(sources)}optimizer = true
 optimizer_runs = 200
 remappings = [
   ${ozRemap}

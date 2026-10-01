@@ -26,6 +26,8 @@ export function storageBitSize(type: IRType): number {
       return 8; // solc stores enums as uint8 (up to 256 members)
     case "struct":
       return SLOT_SIZE_BITS; // structs start a fresh slot and take at least one
+    case "function":
+      return type.visibility === "external" ? 192 : 64; // address + selector, or a code offset
     case "custom":
       return customTypeBits(type.name);
   }
@@ -47,9 +49,12 @@ function customTypeBits(name: string): number {
   return SLOT_SIZE_BITS;
 }
 
-/** Constants and immutables live in bytecode, not storage; they never occupy a slot. */
+/**
+ * Constants and immutables live in bytecode, not storage, and transient
+ * variables in transient storage; none of them occupies a storage slot.
+ */
 export function occupiesStorage(v: IRStateVar): boolean {
-  return v.mutability === undefined;
+  return v.mutability === undefined && !v.transient;
 }
 
 /**

@@ -89,6 +89,8 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return lines;
     }
     case "let": {
+      // A local named like a labelled return value is that return value.
+      if (ctx.returnNames?.has(stmt.name)) return stmt.init ? [`${indent}${stmt.name} = ${emitExpression(stmt.init, ctx)};`] : [];
       // A reference-typed local bound to a storage path is a pointer, not a copy:
       // `const p = this.proposals.get(id)` must become `Proposal storage p = proposals[id];`
       // or writes through `p` would silently go to a memory copy. `localDeclaration`
@@ -100,6 +102,10 @@ function emitStatement(stmt: IRStatement, ctx: EmitContext, indent: string): str
       return [`${indent}${typeStr} ${stmt.name}${initStr};`];
     }
     case "destructure": {
+      const named = stmt.names.filter((n): n is string => !!n);
+      if (named.length > 0 && named.every((n) => ctx.returnNames?.has(n))) {
+        return [`${indent}(${stmt.names.map((n) => n ?? "").join(", ")}) = ${emitExpression(stmt.init, ctx)};`];
+      }
       const types = destructureTypes(stmt, ctx);
       const parts = types.map((t, i) => {
         const name = stmt.names[i];
@@ -144,9 +150,11 @@ function emitTry(stmt: Extract<IRStatement, { kind: "try" }>, ctx: EmitContext, 
   for (const c of stmt.catches) {
     const scope = enterScope(ctx);
     let head: string;
-    if (c.kind === "error") head = `catch Error(string memory ${c.param ?? "reason"})`;
-    else if (c.kind === "panic") head = `catch Panic(uint256 ${c.param ?? "code"})`;
-    else if (c.kind === "bytes") head = `catch (bytes memory ${c.param ?? "data"})`;
+    // An unnamed parameter stays unnamed: a name nothing reads is a solc warning.
+    const named = c.param ? ` ${c.param}` : "";
+    if (c.kind === "error") head = `catch Error(string memory${named})`;
+    else if (c.kind === "panic") head = `catch Panic(uint256${named})`;
+    else if (c.kind === "bytes") head = `catch (bytes memory${named})`;
     else head = "catch";
     if (c.param) scope.localTypes.set(c.param, c.kind === "error" ? { kind: "primitive", name: "string" } : c.kind === "panic" ? { kind: "primitive", name: "uint256" } : { kind: "primitive", name: "bytes" });
     lines.push(`${indent}} ${head} {`);

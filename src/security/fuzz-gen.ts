@@ -7,7 +7,14 @@ export interface FuzzHarness {
   solidity: string;
 }
 
-export function generateFuzzHarness(contract: IRContract): FuzzHarness | null {
+/**
+ * `shared` names the structs, enums and value types declared at file level
+ * (see `sharedDefinitions`): the harness reaches them through the contract's
+ * import, unqualified, where a type declared inside the contract is `C.T`.
+ */
+export function generateFuzzHarness(contract: IRContract, shared: Set<string> = new Set()): FuzzHarness | null {
+  // A library is never deployed on its own, and its functions are internal.
+  if (contract.kind === "library") return null;
   const resolution = resolveContract(contract);
   const ctor = contract.functions.find((f) => f.isConstructor);
   if (ctor && ctor.params.length > 0) return null;
@@ -45,8 +52,12 @@ export function generateFuzzHarness(contract: IRContract): FuzzHarness | null {
   lines.push(`    }`);
   lines.push("");
 
+  // Overloads share a name; their tests must not.
+  const seen = new Map<string, number>();
   for (const fn of fuzzable) {
-    lines.push(...fuzzMethod(contract, fn, invariantFns));
+    const n = (seen.get(fn.name) ?? 0) + 1;
+    seen.set(fn.name, n);
+    lines.push(...fuzzMethod(contract, fn, invariantFns, shared, n > 1 ? `_${n}` : ""));
     lines.push("");
   }
 
@@ -79,11 +90,12 @@ function isFuzzable(contract: IRContract, type: IRType, seen = new Set<string>()
     return decl.fields.every((f) => f.type.kind !== "enum" && isFuzzable(contract, f.type, seen));
   }
   if (type.kind === "array") return type.element.kind !== "enum" && isFuzzable(contract, type.element, seen);
-  if (type.kind === "mapping") return false;
+  // A function pointer has no fuzzable value: an internal one is not even in the ABI.
+  if (type.kind === "mapping" || type.kind === "function") return false;
   return true;
 }
 
-function fuzzMethod(contract: IRContract, fn: IRFunction, invariants: IRFunction[]): string[] {
+function fuzzMethod(contract: IRContract, fn: IRFunction, invariants: IRFunction[], shared: Set<string>, suffix: string): string[] {
   const paramSigs: string[] = [];
   const callArgs: string[] = [];
   const preamble: string[] = [];
@@ -94,14 +106,14 @@ function fuzzMethod(contract: IRContract, fn: IRFunction, invariants: IRFunction
       // revert on an out-of-range enum before any assume in the body could run.
       const decl = contract.enums.find((e) => e.name === (p.type as { name: string }).name);
       const raw = `${p.name}Raw`;
-      const qualified = `${contract.name}.${p.type.name}`;
+      const qualified = shared.has(p.type.name) ? p.type.name : `${contract.name}.${p.type.name}`;
       paramSigs.push(`uint8 ${raw}`);
       if (decl) preamble.push(`        vm.assume(${raw} < ${decl.members.length});`);
       preamble.push(`        ${qualified} ${p.name} = ${qualified}(${raw});`);
       callArgs.push(p.name);
       continue;
     }
-    paramSigs.push(`${solidityFuzzType(p.type, contract.name)} ${p.name}`);
+    paramSigs.push(`${solidityFuzzType(p.type, contract, shared)} ${p.name}`);
     callArgs.push(p.name);
     if (p.type.kind === "primitive" && p.type.name === "address") {
       preamble.push(`        vm.assume(${p.name} != address(0));`);
@@ -111,7 +123,7 @@ function fuzzMethod(contract: IRContract, fn: IRFunction, invariants: IRFunction
   const paramSig = paramSigs.join(", ");
   const cap = fn.name.charAt(0).toUpperCase() + fn.name.slice(1);
   const lines: string[] = [];
-  lines.push(`    function testFuzz_${cap}(${paramSig}) public {`);
+  lines.push(`    function testFuzz_${cap}${suffix}(${paramSig}) public {`);
   lines.push(...preamble);
   const callArgsStr = callArgs.join(", ");
   const isView = fn.decorators.some((d) => d.name === "view" || d.name === "pure");
@@ -151,20 +163,23 @@ function autoInvariantFor(_contract: IRContract, _fn: IRFunction): string | unde
  * which does not inherit it -- they must be written `Governance.Proposal`, not
  * `Proposal`, or solc reports "Identifier not found or not unique".
  */
-function qualifyTypes(t: IRType, contractName: string): IRType {
+function qualifyTypes(t: IRType, contract: IRContract, shared: Set<string>): IRType {
   switch (t.kind) {
     case "struct":
     case "enum":
-      return { ...t, name: `${contractName}.${t.name}` };
+      return shared.has(t.name) ? t : { ...t, name: `${contract.name}.${t.name}` };
+    case "custom":
+      // A user-defined value type declared in the contract.
+      return !shared.has(t.name) && contract.valueTypes?.some((v) => v.name === t.name) ? { ...t, name: `${contract.name}.${t.name}` } : t;
     case "array":
-      return { kind: "array", element: qualifyTypes(t.element, contractName) };
+      return { kind: "array", element: qualifyTypes(t.element, contract, shared), length: t.length };
     case "mapping":
-      return { kind: "mapping", key: qualifyTypes(t.key, contractName), value: qualifyTypes(t.value, contractName) };
+      return { kind: "mapping", key: qualifyTypes(t.key, contract, shared), value: qualifyTypes(t.value, contract, shared) };
     default:
       return t;
   }
 }
 
-function solidityFuzzType(t: IRType, contractName: string): string {
-  return solidityType(qualifyTypes(t, contractName), "memory");
+function solidityFuzzType(t: IRType, contract: IRContract, shared: Set<string>): string {
+  return solidityType(qualifyTypes(t, contract, shared), "memory");
 }

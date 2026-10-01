@@ -17,8 +17,9 @@ export function immutablePass(contract: IRContract, options: OptimizeOptions = {
 
   for (const v of contract.stateVars) {
     // Solidity allows `immutable` on value types only: not `string` or `bytes`.
-    if (!isValueType(v.type)) continue;
-    if (v.mutability) continue;
+    // Nor on a function pointer, and transient storage is never bytecode.
+    if (!isValueType(v.type) || v.type.kind === "function") continue;
+    if (v.mutability || v.transient) continue;
     if (assignedInCtor.has(v.name) && !assignedElsewhere.has(v.name)) {
       v.mutability = "immutable";
       changes.push({

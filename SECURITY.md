@@ -13,7 +13,7 @@ Scriipture is pre-1.0. Security fixes are applied to the latest minor (`0.x`). O
 
 **Do not open a public issue.** Use GitHub's private security advisory flow:
 
-→ https://github.com/Worldstreet-Web-Services/scripture/security/advisories/new
+→ https://github.com/Konstellation-Network/Scriipture/security/advisories/new
 
 What to include:
 - A clear description of the issue

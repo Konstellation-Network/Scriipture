@@ -241,6 +241,11 @@ Every decorator and the Solidity it produces:
 | `@modifier` | `@modifier onlyKeeper(): void { require(msg.sender === this.keeper); }` | `modifier onlyKeeper() { require(…); _; }` — see [Solidity side by side](#solidity-side-by-side) |
 | `@<modifierName>` / `@<modifierName>(args)` | `@onlyKeeper @notBefore(7n * days) sweep() { … }` | `function sweep() public onlyKeeper notBefore(7 days)` — applies a modifier declared with `@modifier` in this contract or a base in the build |
 | `@virtual` | `@virtual fee(a: bigint): bigint { … }` | `function fee(…) public virtual …` — only needed for a contract *outside* the build to override it; overrides within the build are inferred |
+| `@overload("name")` | `@overload("transfer") transferWithData(to: Address, v: bigint, d: Bytes) { … }` | `function transfer(address to, uint256 v, bytes memory d) …` — a second function of the same Solidity name |
+| `@event({ anonymous: true })` | `@event({ anonymous: true }) Moved(…): void {}` | `event Moved(…) anonymous;` |
+| `@transient` | `@transient @storage locked!: boolean;` | `bool public transient locked;` (EIP-1153) |
+| `@library` (class) | `@library export class MathLib { @pure static max(…) { … } }` | `library MathLib { function max(…) internal pure … }` |
+| `@using(Lib)` / `@using<T>(Lib)` (class) | `@using<bigint>(MathLib) export class C { … }` | `using MathLib for uint256;` |
 | `@unsafe("reason")` | `@unsafe("legacy contract requires tx.origin")` | annotation only — silences the secure-mode footgun check, recorded in the audit pack |
 | `@allowTxOrigin("…")`, `@allowSelfdestruct("…")`, `@allowZeroAddress("…")`, `@allowLowLevelCall("…")` | targeted overrides for specific patterns | bypasses just that one secure-mode rule, with the justification stored in attestation |
 
@@ -427,7 +432,7 @@ payable(safe).transfer(amount);
 
 ### Solidity side by side
 
-Every construct below compiles, and is exercised by `tests/solidity-parity.test.ts`. `tests/contracts/Parity.ts` uses most of them in one build. That file type-checks against these typings and is run on the EVM by forge.
+Every construct below compiles, and is exercised by `tests/solidity-parity.test.ts`. `tests/contracts/Parity.ts` and `tests/contracts/Advanced.ts` use them together. Both files type-check against these typings and are run on the EVM by forge.
 
 **Contracts and inheritance**
 
@@ -441,6 +446,9 @@ Every construct below compiles, and is exercised by `tests/solidity-parity.test.
 | `IFoo(addr).f(a)` | `at<IFoo>(addr).f(a)` — typed, and its result types the local it is assigned to |
 | `Child c = new Child(v);` | `const c = new Child(v);` |
 | enums / structs shared with a base | declared once, in the base; the derived contract uses the inherited ones |
+| `Child c = new Child{salt: s, value: v}(a);` | `const c = create(Child, { salt: s, value: v }, a)` — CREATE2 with `salt`, funded with `value` (which needs a payable constructor: `/** @payable */ constructor(…)`) |
+| `library MathLib { function max(…) internal pure … }` | `@library export class MathLib { @pure static max(…) { … } }` — methods are `static` and `internal` unless marked; `static readonly X = …` is a library constant; call as `MathLib.max(a, b)` |
+| `using MathLib for *;` / `using MathLib for uint256;` | `@using(MathLib)` / `@using<bigint>(MathLib)` on the class |
 
 **Functions**
 
@@ -454,6 +462,12 @@ Every construct below compiles, and is exercised by `tests/solidity-parity.test.
 | `returns (uint256, bool)` / `return (a, true);` | `f(): [bigint, boolean]` / `return [a, true];` |
 | `(uint256 x, bool ok) = f();` | `const [x, ok] = this.f();` — component types come from `f`'s return type |
 | `(a, b) = (b, a);` | `[a, b] = [b, a];` |
+| `returns (uint256 amount, bool ok)` | `f(): [amount: bigint, ok: boolean]` — a labelled tuple; `const amount = …` in the body assigns the named return value |
+| two functions named `transfer` | `@overload("transfer") transferWithData(…)` — emitted as `transfer`; calls by the TS name are rewritten. TS interfaces declare overloads natively |
+| `function (uint256) internal pure returns (uint256) f` | `f: Pure<(a: bigint) => bigint>` — a TS function type is `internal`; `External<F>`, `View<F>`, `Pure<F>`, `Payable<F>` adjust it. Pass `this.g` for an internal one, `at<I>(a).g` for an external one. A function taking an internal function type is `internal` unless marked |
+| `function clamp(uint256 v) pure returns (uint256) { … }` at file level | `export function clamp(v: bigint): bigint { … }` at file level — `pure` when it reads nothing from the chain, else tag it `/** @view */` |
+| `uint256 constant MAX = 100;` at file level | `const MAX = 100n;` at file level |
+| `constructor(…) payable` | `/** @payable */ constructor(…)` — TypeScript forbids decorators on constructors |
 
 **Errors and control flow**
 
@@ -466,7 +480,9 @@ Every construct below compiles, and is exercised by `tests/solidity-parity.test.
 | `unchecked { … }` | `unchecked(() => { … })` |
 | `try IFoo(t).f() returns (uint256 r) { … } catch { … }` | `try { const r = at<IFoo>(t).f(); … } catch { … }` — the first statement is the call being tried; `return at<IFoo>(t).f()` works too |
 | `catch (bytes memory reason) { … }` | `catch (reason) { … }` |
+| `catch Error(string memory reason) { … } catch Panic(uint256 code) { … }` | `catch { catchError((reason) => { … }); catchPanic((code) => { … }); … }` — what else the block holds is the catch-all; with no other statements (and no `catch (e)`), any other failure reverts |
 | `emit Transfer(a, b, v);` | `emit(this.Transfer(a, b, v))` |
+| `event E(…) anonymous;` | `@event({ anonymous: true }) E(…): void {}` — no signature topic, so up to four `Indexed<>` parameters |
 
 **Values and conversions**
 
@@ -478,6 +494,8 @@ Every construct below compiles, and is exercised by `tests/solidity-parity.test.
 | `1 ether`, `7 days` | `1n * ether`, `7n * days` (`wei`, `gwei`, `ether`, `seconds`, `minutes`, `hours`, `days`, `weeks`) |
 | `bytes4 s = 0xa9059cbb;` | `"0xa9059cbb" as Bytes4` (exactly 2·N hex digits) |
 | `hex"deadbeef"` | `"0xdeadbeef" as Bytes` |
+| `type Price is uint128;` / `Price.wrap(x)` / `Price.unwrap(p)` | `type Price = ValueType<Uint128, "Price">;` / `wrap<Price>(x)` / `unwrap(p)` — opaque in TS as in Solidity: no arithmetic, no mixing with `Uint128` |
+| `bool transient locked;` | `@transient @storage locked!: boolean;` — EIP-1153, reset after every transaction; the file's pragma becomes `^0.8.28` |
 | `new uint256[](n)` | `new Array<bigint>(n)` |
 | `address(this)` | `address(this)` |
 | `a.balance`, `a.code.length`, `a.codehash` | the same |
@@ -487,7 +505,11 @@ Every construct below compiles, and is exercised by `tests/solidity-parity.test.
 
 Locals whose type is not written are typed from their initializer. That covers `keccak256` (`bytes32`), comparisons (`bool`), `abi.encode` (`bytes memory`), calls into other contracts and interfaces in the build, and `new`. Previously anything unknown fell back to `uint256`.
 
-**Not yet supported**, and reported rather than miscompiled where they can be written at all: libraries and `using … for`, free (file-level) functions and constants, function types, user-defined value types (`type Price is uint128`), overloading, named return values, `new C{salt: s, value: v}(…)` (CREATE2 / funded creation), `catch Error(string)` / `catch Panic(uint256)` clauses, `anonymous` events, `transient` storage, and structs in an interface's signatures.
+**Where things go.** A free function, a file-level constant, and any struct, enum or value type that a library, an interface, a free function or a constant uses are emitted to `<file>.defs.sol`, which every contract, library and interface from that TypeScript file imports. Other structs and enums stay inside each contract, as before.
+
+**A parameter named like a state variable** (`constructor(owner: Address) { this.owner = owner; }`) is emitted as `owner_`, because Solidity would read both sides of `owner = owner` as the parameter. The `no-shadowed-state` warning still points it out.
+
+**No Solidity counterpart**, and reported at your line rather than miscompiled: `null` / `undefined`, optional and default parameters, rest parameters, rest / default / nested destructuring, `switch`, `for … of`, getters and setters, `finally`, JavaScript's standard library (`Math`, `JSON`, …), and `public` / `external` library functions (Scriipture does not link libraries; their functions are internal).
 
 ## 7. Commands
 
@@ -523,7 +545,7 @@ The `pack-slots` pass is **advisory**: it reports how many storage slots you wou
 
 ### `validate <input>`
 
-Static checks (27 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
+Static checks (28 native rules: tx.origin, selfdestruct, integer division, unbounded loops, low-level call return checking, etc.). Pass `--secure` to escalate footgun warnings to errors unless `@allow-*` decorator is present.
 
 ### `optimize <input>`
 
@@ -655,7 +677,7 @@ Environment check (see [§3](#3-scriipture-doctor)).
 
 | # | Gate | Engine | Catches | Cost |
 |---|---|---|---|---|
-| 1 | **native-validator** (secure mode) | Scriipture | 27 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
+| 1 | **native-validator** (secure mode) | Scriipture | 28 rules: tx.origin, selfdestruct, low-level call return checks, delegatecall to input, arbitrary call target, zero-address mint, shadowed state, block.timestamp randomness, transfer-in-loop, unbounded loop, integer division, missing visibility, @view mutation, @payable-non-public, constructor-with-decorators | <1s |
 | 2 | **solc-compile** | solc 0.8.x | actual syntax/type errors | ~1-2s for typical contracts |
 | 3 | **SMTChecker** | native `solc` **built with a Horn solver** | assertion violations, integer overflow/underflow, division by zero, balance overflow, popEmptyArray, contract-level invariants. See [Getting a solc that can actually run it](#smt-solver) — without one the gate is recorded as **skipped**, never as clean | 15s timeout per query |
 | **4** | **Mythril** *(opt-in via `--deep`)* | Mythril 0.24+ symbolic execution | deeper paths: reentrancy variants, integer issues across symbolic state, exception-state assertions, dependence on tx.origin, etc. — uses Z3 to explore the symbolic-state tree | ~90s timeout per contract |
@@ -769,6 +791,12 @@ Built-in networks:
 | `mainnet` | 1 | from viem chain registry |
 | `base-sepolia` | 84532 | https://sepolia.base.org |
 | `base` | 8453 | https://mainnet.base.org |
+| `optimism` | 10 | https://mainnet.optimism.io |
+| `optimism-sepolia` | 11155420 | https://sepolia.optimism.io |
+| `arbitrum` | 42161 | https://arb1.arbitrum.io/rpc |
+| `arbitrum-sepolia` | 421614 | https://sepolia-rollup.arbitrum.io/rpc |
+| `polygon` | 137 | from viem chain registry |
+| `polygon-amoy` | 80002 | https://rpc-amoy.polygon.technology |
 
 Add any chain in `scriipture.config.mjs` — `rpcUrl` and `chainId` are all that's required (`nativeCurrency` and `blockExplorerUrl` are optional):
 
@@ -777,17 +805,14 @@ import { defineConfig } from "scriipture";
 
 export default defineConfig({
   networks: {
-    optimism: {
-      rpcUrl: "https://mainnet.optimism.io",
-      chainId: 10,
+    linea: {
+      rpcUrl: "https://rpc.linea.build",
+      chainId: 59144,
     },
-    arbitrum: {
-      rpcUrl: "https://arb1.arbitrum.io/rpc",
-      chainId: 42161,
-    },
-    polygon: {
-      rpcUrl: "https://polygon-rpc.com",
-      chainId: 137,
+    scroll: {
+      rpcUrl: "https://rpc.scroll.io",
+      chainId: 534352,
+      blockExplorerUrl: "https://scrollscan.com",
     },
   },
 });
@@ -895,7 +920,7 @@ Diagnostics from plugins show as `plugin:my-plugin/no-todo: …`.
 | Compile | solc | hardhat compile | forge build | **scriipture compile** |
 | Unit tests | manual | mocha-style JS | Solidity-native | **scriipture test** (TS bridge to forge) |
 | Fuzzing | n/a | fuzz plugins | built-in | **auto-generated harnesses** |
-| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 27 native rules) |
+| Static analysis | run manually | plugin | bring your own | **gated by default** (Slither + 28 native rules) |
 | SMTChecker | flag in solc | flag in solc | flag in solc | **gated by default** |
 | Deploy | ethers/viem script | hardhat-deploy | cast/forge | **browser-wallet first-class** |
 | Source verification | manual upload to BaseScan | hardhat-verify plugin | forge verify-contract | **auto on every deploy** |

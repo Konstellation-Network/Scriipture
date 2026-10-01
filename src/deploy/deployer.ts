@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import type { CompiledArtifact } from "../compiler/solc";
 import type { Config, NetworkConfig } from "../config/schema";
-import { resolveChain } from "./networks";
+import { CHAINS, resolveChain } from "./networks";
 
 export interface DeployInput {
   artifact: CompiledArtifact;
@@ -78,17 +78,19 @@ export async function fetchDeployedCode(
   }
 }
 
-function defaultNetworkFor(name: string): NetworkConfig {
+/**
+ * A built-in network's settings when the config does not list it: its chain
+ * id and the RPC URL viem ships for it. Only `anvil` names a key variable,
+ * because only anvil has a well-known development key.
+ */
+export function defaultNetworkFor(name: string): NetworkConfig {
   if (name === "anvil") {
     return { rpcUrl: "http://127.0.0.1:8545", chainId: 31337, privateKeyEnv: "ANVIL_PRIVATE_KEY" };
   }
-  if (name === "base-sepolia") {
-    return { rpcUrl: "https://sepolia.base.org", chainId: 84532 };
-  }
-  if (name === "base") {
-    return { rpcUrl: "https://mainnet.base.org", chainId: 8453 };
-  }
-  throw new Error(`Network "${name}" not configured in scriipture.config.ts and no default known.`);
+  const chain = (CHAINS as Record<string, { id: number; rpcUrls: { default: { http: readonly string[] } } }>)[name];
+  const rpcUrl = chain?.rpcUrls.default.http[0];
+  if (chain && rpcUrl) return { rpcUrl, chainId: chain.id };
+  throw new Error(`Network "${name}" not configured in scriipture.config.mjs and no default known.`);
 }
 
 function readPrivateKey(net: NetworkConfig): Hex {

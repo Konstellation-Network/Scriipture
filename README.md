@@ -196,7 +196,7 @@ Every event is declared and emitted exactly as written. `Indexed<T>` becomes an 
 | `2n * ether` / `7n * days` / `"0xa9059cbb" as Bytes4` | `2 ether` / `7 days` / `0xa9059cbb` |
 | `to.call({ value: v }, data)` / `abi.decode<[Address, bigint]>(data)` | `to.call{value: v}(data)` / `abi.decode(data, (address, uint256))` |
 
-The complete mapping, including what is not supported yet (libraries, function types, overloading, …), is in [docs/details.md — Solidity side by side](./docs/details.md#solidity-side-by-side). Anything with no Solidity counterpart, such as `switch`, `Math.max` or a decorator Scriipture doesn't know, is reported at your line instead of being dropped or passed through to solc.
+Libraries (`@library`, `@using`), free functions and file-level constants, function types, user-defined value types, overloads (`@overload`), named returns, CREATE2 (`create(C, { salt, value })`), `catch Error` / `catch Panic`, anonymous events and transient storage have spellings too. The complete mapping is in [docs/details.md — Solidity side by side](./docs/details.md#solidity-side-by-side). Anything with no Solidity counterpart, such as `switch`, `Math.max` or a decorator Scriipture doesn't know, is reported at your line instead of being dropped or passed through to solc.
 
 ---
 
@@ -247,7 +247,7 @@ The last command opens your browser. MetaMask, Rabby, or Coinbase Wallet pops up
 
 | # | Gate | Catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 27 rules |
+| 1 | Native validator | `tx.origin` auth, `selfdestruct`, `delegatecall` to input, zero-address mint, unsafe division — 28 rules |
 | 2 | solc | syntax and type errors |
 | 3 | SMTChecker | overflow, underflow, division-by-zero, assertion violations — needs a native `solc` built with a Horn solver (`scriipture doctor` tells you whether yours is; the version number does not). Recorded as skipped, never as clean, when no solver can run |
 | 4 | Mythril | symbolic execution (opt-in via `--deep`) |
@@ -273,11 +273,17 @@ scriipture deploy MyToken -n base-sepolia
 | Base Sepolia | `base-sepolia` |
 | Ethereum | `mainnet` |
 | Sepolia | `sepolia` |
+| Optimism | `optimism` |
+| Optimism Sepolia | `optimism-sepolia` |
+| Arbitrum One | `arbitrum` |
+| Arbitrum Sepolia | `arbitrum-sepolia` |
+| Polygon PoS | `polygon` |
+| Polygon Amoy | `polygon-amoy` |
 | Local Anvil | `anvil` |
 
 Deployed contracts auto-verify on the matching Etherscan-family explorer when an API key is configured.
 
-> More EVM chains are on the roadmap. Today these five are what `deploy` accepts — anything else exits with `Unknown network`.
+> Any other EVM chain works once it is listed under `networks` in `scriipture.config.mjs` with an `rpcUrl` and `chainId` (see [docs/details.md — Multi-chain deploy](./docs/details.md#10-multi-chain-deploy)).
 
 ---
 
@@ -288,7 +294,7 @@ Deployed contracts auto-verify on the matching Etherscan-family explorer when an
 | `doctor [--fix]` | Check the environment; `--fix` installs what's missing |
 | `init [dir]` | Scaffold a project — contracts, config, tsconfig, scripts |
 | `build <input>` | Transpile TypeScript → Solidity (optimizer on by default) |
-| `validate <input>` | Static checks, 27 native rules |
+| `validate <input>` | Static checks, 28 native rules |
 | `verify <input>` | The full 9-gate pipeline |
 | `compile <input>` | solc → ABI + bytecode |
 | `deploy <Contract> -n <net>` | Deploy via browser wallet, auto-verify source |

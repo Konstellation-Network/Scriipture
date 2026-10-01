@@ -3,13 +3,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import pc from "picocolors";
 import { parseContractFiles } from "../parser/parse";
-import { emitProgram } from "../emitter/emit";
+import { emitProgram, sharedDefinitions } from "../emitter/emit";
 import { optimizeProgram } from "../optimizer/passes";
 import { buildSourceMap } from "../sourcemaps/emit";
 import { validateProgram } from "../validator/rules";
 import { parseDiagnosticsAsErrors } from "../validator/diagnostics";
 import { loadConfig } from "../config/load";
-import { compileSolidity, resolveOZRoot } from "../compiler/solc";
+import { compileSolidity, foundrySolcLine, resolveOZRoot, toolSolcVersion } from "../compiler/solc";
 import { runSlither, slitherInstalled } from "../audit/slither";
 import { runMythril, mythrilInstalled } from "../audit/mythril";
 import { resolveTool } from "../runtime/tool-paths";
@@ -106,6 +106,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
   const { program, diagnostics: parseDiagnostics } = parseContractFiles(files);
   const optimizations = optimizeProgram(program, { reorderStorage: opts.reorderStorage });
   const emitted = emitProgram(program);
+  const solcVersion = toolSolcVersion(emitted.map((e) => e.solidity), config.compiler.version);
 
   for (const e of emitted) fs.writeFileSync(path.join(solDir, `${e.name}.sol`), e.solidity, "utf8");
 
@@ -217,7 +218,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       const sol = fs.readFileSync(path.join(solDir, `${c.name}.sol`), "utf8");
       return buildSourceMap(c, sol);
     });
-    const r = await runMythril(solFiles, sourcemapsM, { timeout: opts.mythrilTimeout });
+    const r = await runMythril(solFiles, sourcemapsM, { timeout: opts.mythrilTimeout, solcVersion });
     const errors = r.diagnostics.filter((d) => d.severity === "error");
     const gateMOk = errors.length === 0;
     for (const c of program.contracts) {
@@ -310,14 +311,15 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
     for (const e of emitted) fs.writeFileSync(path.join(forgeRoot, "src", `${e.name}.sol`), e.solidity, "utf8");
 
     const harnessed = new Set<string>();
+    const defs = sharedDefinitions(program);
     for (const c of program.contracts) {
-      const h = generateFuzzHarness(c);
+      const h = generateFuzzHarness(c, defs.get(c.sourceFile)?.typeNames);
       if (h) {
         fs.writeFileSync(path.join(forgeRoot, "test", h.filename), h.solidity, "utf8");
         harnessed.add(c.name);
         record(c.name, gatePassed("fuzz-harness-generated", h.filename));
       } else {
-        record(c.name, gateNotApplicable("fuzz-harness-generated", "nothing to fuzz: the constructor needs arguments, or no reachable method takes fuzzable parameters"));
+        record(c.name, gateNotApplicable("fuzz-harness-generated", "nothing to fuzz: a library, a constructor that needs arguments, or no reachable method with fuzzable parameters"));
       }
     }
 
@@ -333,7 +335,7 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       }
     } else {
       const runs = opts.fuzzRuns ?? 1000;
-      const forgeReady = ensureForgeProject(forgeRoot);
+      const forgeReady = ensureForgeProject(forgeRoot, foundrySolcLine(emitted.map((e) => e.solidity), config.compiler.version));
       const r = forgeReady
         ? await runForge(forgeRoot, ["--fuzz-runs", String(runs), "--match-contract", "FuzzAuto"])
         : { status: null as number | null };
@@ -372,15 +374,16 @@ export async function verifyCommand(input: string, opts: VerifyOptions): Promise
       }
       fs.mkdirSync(path.join(forgeRoot, "src"), { recursive: true });
       fs.mkdirSync(path.join(forgeRoot, "test"), { recursive: true });
-      // Always refresh: gate 7 writes this file too, but it is skipped under
+      // Always refresh: gate 7 writes these files too, but it is skipped under
       // `--skip fuzz`, and out/forge persists across runs, so an existing copy
-      // may be from a previous version of the contract.
-      fs.writeFileSync(path.join(forgeRoot, "src", `${c.name}.sol`), emitted.find((e) => e.name === c.name)!.solidity, "utf8");
+      // may be from a previous version of the contract. Every file, because
+      // the contract imports its bases, interfaces and shared definitions.
+      for (const e of emitted) fs.writeFileSync(path.join(forgeRoot, "src", `${e.name}.sol`), e.solidity, "utf8");
       fs.writeFileSync(path.join(forgeRoot, "test", `${c.name}.inv.t.sol`), sol, "utf8");
       emittedInvariants.set(c.name, invs.length);
     }
     if (emittedInvariants.size > 0 && !opts.noFuzzRun) {
-      const forgeReady = ensureForgeProject(forgeRoot);
+      const forgeReady = ensureForgeProject(forgeRoot, foundrySolcLine(emitted.map((e) => e.solidity), config.compiler.version));
       const r = forgeReady
         ? await runForge(forgeRoot, ["--match-contract", "InvariantAuto"])
         : { status: null as number | null };
@@ -538,7 +541,7 @@ async function runForge(root: string, args: string[]): Promise<{ status: number 
 }
 
 /** Prepare the forge project; returns false when forge-std is unavailable, in which case forge cannot run. */
-function ensureForgeProject(root: string): boolean {
+function ensureForgeProject(root: string, solcLine: string): boolean {
   fs.mkdirSync(path.join(root, "lib"), { recursive: true });
   const stdPath = path.join(root, "lib", "forge-std", "src", "Test.sol");
   if (!fs.existsSync(stdPath)) {
@@ -557,8 +560,7 @@ src = "src"
 test = "test"
 out = "out"
 libs = ["lib"]
-solc = "0.8.20"
-optimizer = true
+${solcLine}optimizer = true
 remappings = [
   ${ozRemap}
   "forge-std/=lib/forge-std/src/"

@@ -8,7 +8,7 @@
 
 ## Context: what Scriipture is
 
-Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to an EVM network. Source-of-truth is at https://github.com/Worldstreet-Web-Services/scripture (MIT licensed).
+Scriipture is a TypeScript → Solidity transpiler with a built-in 9-gate security pipeline. Developers write smart contracts in TS, Scriipture transpiles them to auditable Solidity, runs security analysis, and deploys to an EVM network. Source-of-truth is at https://github.com/Konstellation-Network/Scriipture (MIT licensed).
 
 **Two things to know before you start:**
 
@@ -246,7 +246,7 @@ Mintlify's nav config. Skeleton:
   },
   "navbar": {
     "links": [
-      { "label": "GitHub", "href": "https://github.com/Worldstreet-Web-Services/scripture" },
+      { "label": "GitHub", "href": "https://github.com/Konstellation-Network/Scriipture" },
       { "label": "npm",    "href": "https://npmjs.com/package/scriipture" }
     ],
     "primary": {
@@ -257,7 +257,7 @@ Mintlify's nav config. Skeleton:
   },
   "footer": {
     "socials": {
-      "github":  "https://github.com/Worldstreet-Web-Services/scripture"
+      "github":  "https://github.com/Konstellation-Network/Scriipture"
     }
   }
 }
@@ -308,13 +308,13 @@ Once the docs are live, add a `Docs` link to the landing page navigation bar poi
 
 ## Keeping docs in sync with Scriipture
 
-Scriipture ships from its own repo (`Worldstreet-Web-Services/scripture`). When the maintainer adds features there, the docs in this repo need to follow. Two approaches:
+Scriipture ships from its own repo (`Konstellation-Network/Scriipture`). When the maintainer adds features there, the docs in this repo need to follow. Two approaches:
 
 **Option A — Manual sync:**
 On each Scriipture release, the maintainer opens a PR here to update the relevant MDX pages. Slow but lets you tightly curate docs.
 
 **Option B — Scripted sync:**
-A small `npm run sync-docs` script fetches the latest `docs/details.md`, `openapi.yaml`, `cli-commands.yaml` from `Worldstreet-Web-Services/scripture`, diffs against the local MDX files, and surfaces what's changed. Faster, but you still need a human to review and split into MDX.
+A small `npm run sync-docs` script fetches the latest `docs/details.md`, `openapi.yaml`, `cli-commands.yaml` from `Konstellation-Network/Scriipture`, diffs against the local MDX files, and surfaces what's changed. Faster, but you still need a human to review and split into MDX.
 
 Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream content has drifted.
 
@@ -325,7 +325,7 @@ Recommend **Option B** with a CI job that runs weekly and opens a PR if upstream
 - **Every page should have at least one code block** in the first 200 words.
 - **Use `<CodeGroup>` for TS↔Sol comparisons** wherever the magic is in what Scriipture auto-generates.
 - **Use `<Note>` for tips, `<Warning>` for footguns, `<Info>` for context.** Don't overuse — they lose force.
-- **Link liberally to the Scriipture GitHub** for source-of-truth on specific functions (`https://github.com/Worldstreet-Web-Services/scripture/blob/main/src/...`).
+- **Link liberally to the Scriipture GitHub** for source-of-truth on specific functions (`https://github.com/Konstellation-Network/Scriipture/blob/main/src/...`).
 - **Don't paste the full security-pipeline gate list on every page.** Link to `/concepts/security-pipeline` and let that be the canonical reference.
 
 ## Deliverables when you're done
@@ -348,5 +348,5 @@ When you start work, get these answered:
 3. **Sync cadence** — manual or scripted; weekly cron or per-release.
 4. **Mintlify plan tier** — free works for most projects but custom domains and analytics often require paid; check what's needed.
 5. **Versioned docs?** — Scriipture is at `0.1.0` and pre-1.0, so breaking changes between minors are likely. Latest-only is fine to start; revisit if `0.2.0` breaks the contract-authoring API.
-6. **Repo access** — who on the docs side gets added to the private `Worldstreet-Web-Services/scripture` repo, and does the Mintlify GitHub app need read access to it for any sync automation?
+6. **Repo access** — who on the docs side gets added to the private `Konstellation-Network/Scriipture` repo, and does the Mintlify GitHub app need read access to it for any sync automation?
 7. **Publish timing** — docs promising `npm install scriipture` shouldn't go live before the package does. Confirm the release date so the two land together.

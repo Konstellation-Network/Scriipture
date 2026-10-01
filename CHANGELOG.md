@@ -5,6 +5,18 @@ All notable changes to Scriipture follow [Keep a Changelog](https://keepachangel
 ## [Unreleased]
 
 ### Added
+- **The constructs that were listed as "not yet supported" now have TypeScript spellings**, each covered by a parity case, by `tests/contracts/Advanced.ts` (type-checked against `types/index.d.ts`, compiled with solc) and, with forge installed, by `tests/contracts/Advanced.behavior.t.sol` on the EVM:
+  - **Libraries.** `@library export class L { @pure static f(…) { … } }` → `library L { function f(…) internal pure … }`; `static readonly X = …` is a library constant. `@using(L)` / `@using<bigint>(L)` on a contract → `using L for *;` / `using L for uint256;`.
+  - **Free functions and file-level constants.** `export function f(…)` and `const X = …` at file level are emitted, with any struct, enum or value type that a library, interface, free function or constant uses, to `<file>.defs.sol`, which the file's contracts, libraries and interfaces import. A free function is `pure` when it reads nothing from the chain; `/** @view */` tags it otherwise. `let` at file level is reported. This also makes **structs in an interface's signatures** work.
+  - **Function types.** `(a: bigint) => bigint` → `function (uint256) internal returns (uint256)`, adjusted by `External<F>`, `View<F>`, `Pure<F>`, `Payable<F>`. A function taking or returning an internal function type is `internal` unless marked; such a state variable is `internal`.
+  - **User-defined value types.** `type Price = ValueType<Uint128, "Price">` → `type Price is uint128;`, with `wrap<Price>(x)` / `unwrap(p)` → `Price.wrap(x)` / `Price.unwrap(p)`. New validator rule `value-type-unwrap` (28 rules) reports an `unwrap` whose type cannot be inferred.
+  - **Overloading.** `@overload("transfer") transferWithData(…)` emits a second `transfer`; calls by the TS name are rewritten. `virtual` / `override` inference now compares parameter types, so an overload is no longer taken for an override.
+  - **Named return values.** `f(): [amount: bigint, ok: boolean]` → `returns (uint256 amount, bool ok)`; `const amount = …` in the body assigns it.
+  - **CREATE2 and funded creation.** `create(Child, { salt, value }, …args)` → `new Child{salt: salt, value: value}(…)`. `/** @payable */ constructor(…)` makes a constructor `payable`.
+  - **`catch Error(string)` / `catch Panic(uint256)`.** `catchError((reason) => { … })` and `catchPanic((code) => { … })` inside a `catch` block; the rest of the block is the catch-all. An unnamed clause parameter is emitted unnamed.
+  - **Anonymous events.** `@event({ anonymous: true })`, with up to four indexed parameters.
+  - **Transient storage.** `@transient @storage x!: T` → `T transient x;`, with the file's pragma raised to `^0.8.28`; the `constant`, `immutable` and `pack-slots` passes leave it alone.
+- **Six more built-in networks**: `optimism`, `optimism-sepolia`, `arbitrum`, `arbitrum-sepolia`, `polygon`, `polygon-amoy`.
 - **Solidity parity: the constructs a Solidity developer reaches for now have a TypeScript spelling.** Each is covered by `tests/solidity-parity.test.ts` (70 per-feature cases, each compiled with solc), and `tests/contracts/Parity.ts` combines them in one build that type-checks against `types/index.d.ts` and is run on the EVM by forge when it is installed. The full mapping is in docs/details.md, "Solidity side by side".
   - **Interfaces and external calls.** A file-level `interface` of methods is a Solidity `interface` in its own `<Name>.sol`, emitted when the build uses it. `at<IERC20>(t).transfer(to, v)` → `IERC20(t).transfer(to, v)`, typed by the interface. `implements IFoo` → `is IFoo`. `/** @view */` (or `@pure` / `@payable`) on a method sets its mutability. Any other contract or interface a contract names (`new Child(…)`, a parameter type) is imported from `./<Name>.sol`.
   - **Inheritance.** `abstract class` → `abstract contract`; `abstract f(): T;` → a bodiless `virtual` function. `virtual` and `override` (with `override(A, B)` when several paths define the function) are inferred across the build; TS `override` and `@virtual` force them for bases outside it.
@@ -42,6 +54,13 @@ All notable changes to Scriipture follow [Keep a Changelog](https://keepachangel
 - npm keywords list only chains that ship (`base`, `base-sepolia`, `sepolia`); `optimism` and the misspelt `arbitrary` are gone.
 
 ### Fixed
+- **A parameter or local named like a state variable wrote to itself.** `constructor(owner: Address) { this.owner = owner; }` emitted `owner = owner;`, which Solidity reads as the parameter on both sides, so the state variable was never set. Such names are emitted with a trailing `_` (`owner = owner_;`).
+- **`deploy -n sepolia` / `-n mainnet` failed with "not configured"** unless the network was in the config file, though both are built in. Every built-in network now deploys with viem's default RPC when the config does not list it.
+- **forge and Mythril were pinned to solc 0.8.20**, whatever the sources needed and whatever `compiler.version` said. They now use `compiler.version`, and when a file needs a newer compiler forge picks a compatible installed one.
+- Gate 8 wrote only the contract's own `.sol` into the forge project, so under `--skip fuzz` a contract importing a base, an interface or a shared definitions file did not compile. It writes every emitted file.
+- The fuzz harness gave overloads the same test name, and qualified file-level types as if they were the contract's.
+- `docs/cli-commands.yaml` was generated by scraping wrapped `--help` text, which cut descriptions off mid-sentence, skipped the `config` and `wallet` subcommands and had gone stale (it still said "8-gate"). The command tree now lives in `src/cli/program.ts` and the generator walks it.
+- Repository links (`package.json`, `scriipture init`, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, LANDING) pointed at the old `Worldstreet-Web-Services/scripture` repository.
 - **An unknown decorator no longer vanishes.** `@onlyAdmin` with no matching modifier emitted the function with no access check, and `@private_` on a state variable emitted it `public`. The first is now an `unknown-decorator` error; the second is honoured.
 - **`x **= y` compiled to `x **= y`**, which Solidity does not have; it is `x = x ** y`.
 - **`throw new Error("reason")` emitted a bare `revert()`**, dropping the reason.

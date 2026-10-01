@@ -1,9 +1,11 @@
+import path from "node:path";
 import type {
   IRContract,
   IREnumDecl,
   IRErrorDecl,
   IREventDecl,
   IRExpression,
+  IRFileScope,
   IRFunction,
   IRInterface,
   IRParam,
@@ -12,14 +14,15 @@ import type {
   IRStatement,
   IRStructDecl,
   IRType,
+  IRValueTypeDecl,
 } from "../ir/types";
 import { walkExpressionsInStatement, walkStatements } from "../optimizer/walk";
 import { ancestorsOf } from "../mapper/lineage";
-import { resolveContract, standardImportFor, type ContractResolution } from "../mapper/decorators";
+import { resolveContract, resolveFunctionDecorators, standardImportFor, type ContractResolution } from "../mapper/decorators";
 import { emitExpression, type EmitContext } from "../mapper/expressions";
 import { emitStatements } from "../mapper/statements";
 import { solidityType } from "../mapper/types";
-import { contractTypeEnv, functionScope } from "../mapper/infer";
+import { contractTypeEnv, fileTypeEnv, functionScope } from "../mapper/infer";
 
 export interface EmitOptions {
   pragma?: string;
@@ -35,9 +38,11 @@ export interface EmitOptions {
    * contracts, and calls into other contracts and interfaces are typed.
    */
   program?: IRProgram;
+  /** The shared definitions file of each source file, from `sharedDefinitions`. */
+  defs?: Map<string, SharedDefinitions>;
 }
 
-const DEFAULTS: Required<Omit<EmitOptions, "knownContracts" | "program">> = {
+const DEFAULTS: Required<Omit<EmitOptions, "knownContracts" | "program" | "defs">> = {
   pragma: "^0.8.20",
   license: "MIT",
 };
@@ -46,8 +51,12 @@ export interface EmittedContract {
   name: string;
   sourceFile: string;
   solidity: string;
-  /** `interface` for a Solidity interface file; absent for a contract. */
-  kind?: "interface";
+  /**
+   * `interface` for a Solidity interface file, `defs` for a source file's
+   * shared definitions (free functions, constants, and the structs, enums and
+   * value types more than one unit needs); absent for a contract or library.
+   */
+  kind?: "interface" | "defs";
 }
 
 /**
@@ -59,11 +68,111 @@ export interface EmittedContract {
 export function emitProgram(program: IRProgram, opts: EmitOptions = {}): EmittedContract[] {
   const interfaces = usedInterfaces(program);
   const knownContracts = opts.knownContracts ?? new Set([...program.contracts.map((c) => c.name), ...interfaces.map((i) => i.name)]);
-  const o = { ...opts, knownContracts, program };
+  const defs = sharedDefinitions(program, interfaces);
+  const o = { ...opts, knownContracts, program, defs };
   return [
     ...program.contracts.map((c) => ({ name: c.name, sourceFile: c.sourceFile, solidity: emitContract(c, o) })),
     ...interfaces.map((i) => ({ name: i.name, sourceFile: i.sourceFile, solidity: emitInterface(i, o), kind: "interface" as const })),
+    ...[...defs.values()].map((d) => ({ name: d.name, sourceFile: d.scope.sourceFile, solidity: emitDefinitions(d, o), kind: "defs" as const })),
   ];
+}
+
+/**
+ * What one source file declares at Solidity's file level, and the name of the
+ * `.sol` that holds it. A struct, enum or value type normally lives inside
+ * each contract of its file; one that a library, an interface, a free
+ * function or a file constant uses must be visible outside any contract, so
+ * it moves here and the file's contracts import it instead of declaring it.
+ */
+export interface SharedDefinitions {
+  name: string;
+  scope: IRFileScope;
+  structs: IRStructDecl[];
+  enums: IREnumDecl[];
+  valueTypes: IRValueTypeDecl[];
+  /** Names of `structs`, `enums` and `valueTypes`, which contracts in the file must not redeclare. */
+  typeNames: Set<string>;
+}
+
+export function sharedDefinitions(program: IRProgram, interfaces = usedInterfaces(program)): Map<string, SharedDefinitions> {
+  const out = new Map<string, SharedDefinitions>();
+  for (const scope of program.files ?? []) {
+    const fileTypes = new Set([...scope.structs, ...scope.enums, ...scope.valueTypes].map((t) => t.name));
+    const users = [
+      ...interfaces.filter((i) => i.sourceFile === scope.sourceFile).map((i) => referencedTypeNames(i.functions, [])),
+      ...program.contracts.filter((c) => c.kind === "library" && c.sourceFile === scope.sourceFile).map((c) => referencedTypeNames(c.functions, c.stateVars)),
+      referencedTypeNames(scope.functions, scope.constants),
+    ];
+    const needed = new Set<string>();
+    const pending = users.flatMap((u) => [...u]).filter((n) => fileTypes.has(n));
+    // A shared struct's fields must be visible where it is declared, too.
+    while (pending.length > 0) {
+      const n = pending.pop()!;
+      if (needed.has(n)) continue;
+      needed.add(n);
+      const st = scope.structs.find((x) => x.name === n);
+      if (st) for (const f of st.fields) for (const r of typeNames(f.type)) if (fileTypes.has(r)) pending.push(r);
+    }
+    if (needed.size === 0 && scope.functions.length === 0 && scope.constants.length === 0) continue;
+    out.set(scope.sourceFile, {
+      name: `${path.basename(scope.sourceFile).replace(/\.[cm]?tsx?$/, "")}.defs`,
+      scope,
+      structs: scope.structs.filter((x) => needed.has(x.name)),
+      enums: scope.enums.filter((x) => needed.has(x.name)),
+      valueTypes: scope.valueTypes.filter((x) => needed.has(x.name)),
+      typeNames: needed,
+    });
+  }
+  return out;
+}
+
+/** The names a type refers to: structs, enums, value types, contracts and interfaces. */
+function typeNames(t: IRType): string[] {
+  switch (t.kind) {
+    case "struct": case "enum": case "custom": return [t.name];
+    case "mapping": return [...typeNames(t.key), ...typeNames(t.value)];
+    case "array": return typeNames(t.element);
+    case "tuple": return t.elements.flatMap(typeNames);
+    case "function": return [...t.params, ...t.returns].flatMap(typeNames);
+    default: return [];
+  }
+}
+
+/** A source file's shared definitions: file-level value types, enums, structs, constants and free functions. */
+function emitDefinitions(d: SharedDefinitions, opts: EmitOptions): string {
+  const o = { ...DEFAULTS, ...opts };
+  const lines = [`// SPDX-License-Identifier: ${o.license}`, `pragma solidity ${o.pragma};`, ""];
+  const refs = referencedTypeNames(d.scope.functions, d.scope.constants);
+  const imports = [...refs].filter((n) => o.knownContracts?.has(n) ?? false).sort();
+  for (const n of imports) lines.push(`import "./${n}.sol";`);
+  if (imports.length > 0) lines.push("");
+  const unindent = (ls: string[]) => ls.map((l) => l.replace(/^ {4}/, ""));
+  const blocks: string[][] = [
+    ...d.valueTypes.map((v) => unindent(emitValueType(v))),
+    ...d.enums.map((e) => unindent(emitEnum(e))),
+    ...d.structs.map((st) => unindent(emitStruct(st))),
+  ];
+  const fileEnv: EmitContext = { stateVarNames: new Set(), ...fileTypeEnv(d.scope, o.program) };
+  if (d.scope.constants.length > 0) {
+    blocks.push(d.scope.constants.flatMap((c) => {
+      // solc accepts no NatSpec on a file-level constant; keep the comment as a plain one.
+      const natspec = (c.natspec ?? []).map((ln) => `// ${ln}`);
+      return [...natspec, `${solidityType(c.type, "storage")} constant ${c.name} = ${emitExpression(c.initializer!, fileEnv)};`];
+    }));
+  }
+  for (const fn of d.scope.functions) {
+    const res = resolveFunctionDecorators(fn.decorators);
+    const params = fn.params.map((p) => paramSignature(p)).join(", ");
+    const mut = res.stateMutability ? ` ${res.stateMutability}` : "";
+    const fnLines = (fn.natspec ?? []).map((ln) => `/// ${ln}`);
+    fnLines.push(`function ${fn.name}(${params})${mut}${returnsClause(fn.returnType)} {`);
+    fnLines.push(...emitStatements(fn.body, functionScope({ ...fileEnv, returnNames: returnNames(fn) }, fn), "    "));
+    fnLines.push("}");
+    blocks.push(fnLines);
+  }
+  blocks.forEach((b, i) => { if (i > 0) lines.push(""); lines.push(...b); });
+  lines.push("");
+  return lines.join("\n");
 }
 
 /**
@@ -89,8 +198,10 @@ export function emitInterface(iface: IRInterface, opts: EmitOptions = {}): strin
   const o = { ...DEFAULTS, ...opts };
   const lines = [`// SPDX-License-Identifier: ${o.license}`, `pragma solidity ${o.pragma};`, ""];
   const refs = referencedTypeNames(iface.functions, []);
-  const imports = [...refs].filter((n) => n !== iface.name && (o.knownContracts?.has(n) ?? false)).sort();
-  for (const n of imports) lines.push(`import "./${n}.sol";`);
+  const imports = [...refs].filter((n) => n !== iface.name && (o.knownContracts?.has(n) ?? false)).map((n) => `./${n}.sol`);
+  const defs = o.defs?.get(iface.sourceFile);
+  if (defs && [...refs].some((n) => defs.typeNames.has(n))) imports.push(`./${defs.name}.sol`);
+  for (const n of imports.sort()) lines.push(`import "${n}";`);
   if (imports.length > 0) lines.push("");
   if (iface.natspec) for (const ln of iface.natspec) lines.push(`/// ${ln}`);
   lines.push(`interface ${iface.name} {`);
@@ -108,7 +219,18 @@ export function emitInterface(iface: IRInterface, opts: EmitOptions = {}): strin
 /** ` returns (T)` / ` returns (A, B)` in Solidity's spelling, or nothing for `void`. */
 function returnsClause(type: IRType): string {
   if (type.kind === "primitive" && type.name === "void") return "";
+  if (type.kind === "tuple" && type.names) {
+    // `[amount: bigint, ok: boolean]` → `returns (uint256 amount, bool ok)`.
+    return ` returns (${type.elements.map((t, i) => `${solidityType(t, "memory")}${type.names![i] ? ` ${type.names![i]}` : ""}`).join(", ")})`;
+  }
   return ` returns (${solidityType(type, "memory")})`;
+}
+
+/** The names of a function's labelled return values, which its body must assign rather than redeclare. */
+function returnNames(fn: IRFunction): Set<string> | undefined {
+  const t = fn.returnType;
+  if (t.kind !== "tuple" || !t.names) return undefined;
+  return new Set(t.names.filter((n): n is string => !!n));
 }
 
 /**
@@ -119,17 +241,16 @@ function returnsClause(type: IRType): string {
 function referencedTypeNames(fns: IRFunction[], vars: IRStateVar[]): Set<string> {
   const out = new Set<string>();
   const addType = (t: IRType | undefined): void => {
-    if (!t) return;
-    if (t.kind === "custom") out.add(t.name);
-    if (t.kind === "mapping") { addType(t.key); addType(t.value); }
-    if (t.kind === "array") addType(t.element);
-    if (t.kind === "tuple") t.elements.forEach(addType);
+    if (t) for (const n of typeNames(t)) out.add(n);
   };
   const addExpr = (e: IRExpression): void => {
     if (e.kind === "new" && !e.type) out.add(e.className);
     if (e.kind === "new") addType(e.type);
     if (e.kind === "call" && e.callee.kind === "identifier") out.add(e.callee.name);
     if (e.kind === "call") e.typeArgs?.forEach(addType);
+    // `MathLib.max(a, b)`, `Price.wrap(x)`, `IERC20(t).transfer` is covered above.
+    if (e.kind === "member" && e.object.kind === "identifier") out.add(e.object.name);
+    if (e.kind === "object" && e.structName) out.add(e.structName);
   };
   const addStmt = (st: IRStatement): void => {
     if (st.kind === "let") addType(st.type);
@@ -159,7 +280,8 @@ function referencedTypeNames(fns: IRFunction[], vars: IRStateVar[]): Set<string>
  */
 function inheritanceSpecifiers(contract: IRContract, program: IRProgram | undefined): Map<IRFunction, string> {
   const byName = new Map((program?.contracts ?? []).map((c) => [c.name, c]));
-  const defines = (c: IRContract, fn: IRFunction) => c.functions.some((f) => !f.isConstructor && f.name === fn.name && f.special === fn.special);
+  // Same name *and* parameter types: an overload with other parameters is a different function.
+  const defines = (c: IRContract, fn: IRFunction) => c.functions.some((f) => !f.isConstructor && f.name === fn.name && f.special === fn.special && sameParams(f, fn));
   /** The contracts nearest `c` (itself included) that define `fn`, along every path. */
   const nearestDefiners = (c: IRContract, fn: IRFunction, seen: Set<string>): Set<string> => {
     if (seen.has(c.name)) return new Set();
@@ -191,6 +313,70 @@ function inheritanceSpecifiers(contract: IRContract, program: IRProgram | undefi
   return out;
 }
 
+function takesInternalFunction(fn: IRFunction): boolean {
+  const internal = (t: IRType): boolean =>
+    (t.kind === "function" && t.visibility === "internal") ||
+    (t.kind === "tuple" && t.elements.some(internal)) ||
+    (t.kind === "array" && internal(t.element));
+  return fn.params.some((p) => internal(p.type)) || internal(fn.returnType);
+}
+
+/**
+ * `constructor(side: bigint) { this.side = side; }` is ordinary TypeScript,
+ * but Solidity reads both sides as the parameter -- `side = side;` -- and the
+ * state variable is never written. A parameter, local or named return value
+ * that shares a state variable's name is emitted with a trailing `_` instead
+ * (a bare name in the body can only mean the local; the state variable is
+ * always `this.side`). Parameter names are not part of the ABI selector.
+ */
+export function deshadow(fn: IRFunction, stateNames: Iterable<string>): IRFunction {
+  const state = new Set(stateNames);
+  const declared = new Set(fn.params.map((p) => p.name));
+  if (fn.returnType.kind === "tuple") for (const n of fn.returnType.names ?? []) if (n) declared.add(n);
+  walkStatements(fn.body, (st) => {
+    if (st.kind === "let") declared.add(st.name);
+    if (st.kind === "destructure") for (const n of st.names) if (n) declared.add(n);
+    if (st.kind === "try") {
+      for (const r of st.returns) if (r.name) declared.add(r.name);
+      for (const c of st.catches) if (c.param) declared.add(c.param);
+    }
+  });
+  const renames = new Map<string, string>();
+  for (const n of declared) {
+    if (!state.has(n)) continue;
+    let to = `${n}_`;
+    while (declared.has(to) || state.has(to)) to += "_";
+    renames.set(n, to);
+  }
+  if (renames.size === 0) return fn;
+  const r = (n: string) => renames.get(n) ?? n;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    const o = node as Record<string, any>;
+    if (o.kind === "identifier" && typeof o.name === "string") o.name = r(o.name);
+    if (o.kind === "let" && typeof o.name === "string") o.name = r(o.name);
+    if (o.kind === "destructure") o.names = o.names.map((n: string | undefined) => (n ? r(n) : n));
+    if (o.kind === "try") for (const ret of o.returns) ret.name = r(ret.name);
+    if (typeof o.param === "string" && Array.isArray(o.body)) o.param = r(o.param);
+    // `@onlyCreator(param("id"))` names a parameter by string.
+    if (o.kind === "call" && o.callee?.kind === "identifier" && o.callee.name === "param" && o.args?.[0]?.kind === "literal") o.args[0].value = r(o.args[0].value);
+    for (const k of Object.keys(o)) if (k !== "loc") visit(o[k]);
+  };
+  const out = structuredClone(fn);
+  for (const p of out.params) p.name = r(p.name);
+  if (out.returnType.kind === "tuple" && out.returnType.names) out.returnType.names = out.returnType.names.map((n) => (n ? r(n) : n));
+  visit(out.body);
+  visit(out.decorators);
+  if (out.superCall) visit(out.superCall.args);
+  return out;
+}
+
+function sameParams(a: IRFunction, b: IRFunction): boolean {
+  const sig = (f: IRFunction) => f.params.map((p) => solidityType(p.type)).join(",");
+  return sig(a) === sig(b);
+}
+
 export function emitContract(contract: IRContract, opts: EmitOptions = {}): string {
   const o = { ...DEFAULTS, ...opts };
   const resolution = resolveContract(contract);
@@ -201,17 +387,26 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
 
   const lines: string[] = [];
   lines.push(`// SPDX-License-Identifier: ${o.license}`);
-  lines.push(`pragma solidity ${o.pragma};`);
+  // Transient state variables need solc 0.8.28; the default range admits older compilers.
+  const needsTransient = contract.stateVars.some((v) => v.transient) && o.pragma === DEFAULTS.pragma;
+  lines.push(`pragma solidity ${needsTransient ? "^0.8.28" : o.pragma};`);
   lines.push("");
 
   // A base that Scriipture bundles comes in through resolution.imports; one
   // defined in this program sits in its own file next to this one.
   // So is every other contract or interface it names: `new Child(…)`,
   // `at<IERC20>(t)`, a parameter of type `IERC20`, `implements IERC20`.
-  const referenced = [...contract.bases, ...(contract.interfaces ?? []), ...referencedTypeNames(contract.functions, contract.stateVars)];
+  const referenced = [
+    ...contract.bases,
+    ...(contract.interfaces ?? []),
+    ...(contract.usingFor ?? []).map((u) => u.library),
+    ...referencedTypeNames(contract.functions, contract.stateVars),
+  ];
   const localBases = referenced
     .filter((b) => b !== contract.name && !standardImportFor(b) && (o.knownContracts?.has(b) ?? false))
     .map((b) => `./${b}.sol`);
+  const defs = o.defs?.get(contract.sourceFile);
+  if (defs) localBases.push(`./${defs.name}.sol`);
   const imports = Array.from(new Set([...resolution.imports, ...localBases])).sort();
   for (const imp of imports) lines.push(`import "${imp}";`);
   if (imports.length > 0) lines.push("");
@@ -220,17 +415,28 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
 
   // Interfaces come first: Solidity linearizes bases in the order written,
   // and an interface is the most basic of all.
+  const isLibrary = contract.kind === "library";
   const parents = [...(contract.interfaces ?? []), ...resolution.inheritedContracts];
-  const keyword = contract.isAbstract ? "abstract contract" : "contract";
+  const keyword = isLibrary ? "library" : contract.isAbstract ? "abstract contract" : "contract";
   lines.push(parents.length > 0 ? `${keyword} ${contract.name} is ${parents.join(", ")} {` : `${keyword} ${contract.name} {`);
+
+  for (const u of contract.usingFor ?? []) lines.push(`    using ${u.library} for ${u.type ? solidityType(u.type) : "*"};`);
+  if (contract.usingFor?.length) lines.push("");
 
   // Every contract in a file carries the file's enums and structs, but one
   // that inherits a base in the build already sees the base's copies:
-  // declaring them again is "Identifier already declared".
+  // declaring them again is "Identifier already declared". Neither does one
+  // whose file declares them at file level (see sharedDefinitions). A library
+  // declares none: every type its functions use is shared.
   const inherited = ancestorsOf(contract, o.program);
-  const inheritedTypes = new Set(inherited.flatMap((b) => [...b.enums.map((e) => e.name), ...b.structs.map((st) => st.name)]));
-  const enums = contract.enums.filter((en) => !inheritedTypes.has(en.name));
-  const structs = contract.structs.filter((st) => !inheritedTypes.has(st.name));
+  const inheritedTypes = new Set(inherited.flatMap((b) => [...b.enums, ...b.structs, ...(b.valueTypes ?? [])].map((t) => t.name)));
+  const own = (name: string) => !isLibrary && !inheritedTypes.has(name) && !defs?.typeNames.has(name);
+  const valueTypes = (contract.valueTypes ?? []).filter((v) => own(v.name));
+  const enums = contract.enums.filter((en) => own(en.name));
+  const structs = contract.structs.filter((st) => own(st.name));
+
+  for (const v of valueTypes) lines.push(...emitValueType(v));
+  if (valueTypes.length > 0) lines.push("");
 
   for (const en of enums) lines.push(...emitEnum(en));
   if (enums.length > 0) lines.push("");
@@ -247,7 +453,9 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
   for (const v of contract.stateVars) lines.push(...emitStateVar(v, ctx));
   if (contract.stateVars.length > 0) lines.push("");
 
-  const constructorFn = contract.functions.find((f) => f.isConstructor);
+  const constructorFn0 = contract.functions.find((f) => f.isConstructor);
+  const stateNames = [...(ctx.stateVarTypes?.keys() ?? []), ...stateVarNames];
+  const constructorFn = constructorFn0 && deshadow(constructorFn0, stateNames);
   const needsSynthesizedCtor = !constructorFn && resolution.inheritedContracts.some((b) => BASE_CONSTRUCTOR_ARGS[b] !== undefined);
   if (constructorFn) {
     lines.push(...emitConstructor(constructorFn, contract, resolution, ctx));
@@ -264,7 +472,7 @@ export function emitContract(contract: IRContract, opts: EmitOptions = {}): stri
 
   for (const fn of contract.functions) {
     if (fn.isConstructor) continue;
-    lines.push(...emitFunction(fn, resolution, ctx, specifiers.get(fn), modifierNames));
+    lines.push(...emitFunction(fn, resolution, ctx, specifiers.get(fn), modifierNames, isLibrary ? "internal" : "public", stateNames));
     lines.push("");
   }
 
@@ -325,6 +533,13 @@ function emitHelpers(set: Set<"_validateAddr" | "_pullPayment">): string[] {
   return lines;
 }
 
+function emitValueType(v: IRValueTypeDecl): string[] {
+  const lines: string[] = [];
+  if (v.natspec) for (const ln of v.natspec) lines.push(`    /// ${ln}`);
+  lines.push(`    type ${v.name} is ${solidityType(v.underlying)};`);
+  return lines;
+}
+
 function emitEnum(en: IREnumDecl): string[] {
   const lines: string[] = [];
   if (en.natspec) for (const ln of en.natspec) lines.push(`    /// ${ln}`);
@@ -353,16 +568,17 @@ function emitEvent(ev: IREventDecl): string[] {
   const params = ev.params
     .map((p) => `${solidityType(p.type)}${p.indexed ? " indexed" : ""} ${p.name}`)
     .join(", ");
-  return [`    event ${ev.name}(${params});`];
+  return [`    event ${ev.name}(${params})${ev.anonymous ? " anonymous" : ""};`];
 }
 
 function emitStateVar(v: IRStateVar, ctx: EmitContext): string[] {
   const lines: string[] = [];
   if (v.natspec) for (const ln of v.natspec) lines.push(`    /// ${ln}`);
 
-  const visibility = v.visibility ?? "public";
+  // An internal function pointer cannot be public: it has no ABI encoding for the getter.
+  const visibility = v.visibility ?? (v.type.kind === "function" && v.type.visibility === "internal" ? "internal" : "public");
   const typeStr = solidityType(v.type, "storage");
-  const mutability = v.mutability ? ` ${v.mutability}` : "";
+  const mutability = v.transient ? " transient" : v.mutability ? ` ${v.mutability}` : "";
   const initStr = v.initializer && !shouldSkipInitializer(v) ? ` = ${emitExpression(v.initializer, ctx)}` : "";
   lines.push(`    ${typeStr} ${visibility}${mutability} ${v.name}${initStr};`);
   return lines;
@@ -403,7 +619,7 @@ function emitConstructor(
 
   const lines: string[] = [];
   if (fn.natspec) for (const ln of fn.natspec) lines.push(`    /// ${ln}`);
-  lines.push(`    constructor(${paramStr})${superStr} {`);
+  lines.push(`    constructor(${paramStr})${fn.payable ? " payable" : ""}${superStr} {`);
   lines.push(...emitStatements(fn.body, withLocals(ctx, fn), "        "));
   lines.push("    }");
   return lines;
@@ -459,9 +675,13 @@ function emitFunction(
   ctx: EmitContext,
   inheritance: string | undefined,
   modifierNames: Set<string>,
+  defaultVisibility: "public" | "internal",
+  stateNames: string[] = [],
 ): string[] {
   const res = resolution.functions.get(fn);
   if (!res) return [];
+  fn = deshadow(fn, stateNames);
+  ctx = { ...ctx, returnNames: returnNames(fn) };
 
   const params = fn.params.map((p) => paramSignature(p)).join(", ");
   const inh = inheritance ? ` ${inheritance}` : "";
@@ -492,7 +712,9 @@ function emitFunction(
   } else if (fn.special === "fallback") {
     head = `fallback() external${res.stateMutability === "payable" ? " payable" : ""}${inh}${modifiers}`;
   } else {
-    const visibility = res.visibility ?? "public";
+    // An internal function pointer has no ABI encoding, so a function taking or
+    // returning one can only be called from inside: `internal` unless told otherwise.
+    const visibility = res.visibility ?? (takesInternalFunction(fn) ? "internal" : defaultVisibility);
     const mutability = res.stateMutability ? ` ${res.stateMutability}` : "";
     head = `function ${fn.name}(${params}) ${visibility}${mutability}${inh}${modifiers}${returnsClause(fn.returnType)}`;
   }
