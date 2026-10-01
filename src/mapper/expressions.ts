@@ -59,6 +59,11 @@ const GLOBAL_OBJECT_REWRITES: Record<string, true> = {
 
 export interface EmitContext extends TypeEnv {
   stateVarNames: Set<string>;
+  /**
+   * The labels of the function's named return values. They are declared by
+   * the `returns (…)` clause, so a local of the same name is an assignment.
+   */
+  returnNames?: Set<string>;
 }
 
 export function emitExpression(expr: IRExpression, ctx: EmitContext): string {
@@ -278,6 +283,11 @@ function emitCall(expr: Extract<IRExpression, { kind: "call" }>, ctx: EmitContex
     const t = expr.typeArgs[0]!;
     const parts = t.kind === "tuple" ? t.elements : [t];
     return `abi.decode(${emit(expr.args[0]!, ctx)}, (${parts.map((p) => solidityType(p)).join(", ")}))`;
+  }
+  // `unwrap(p)` → `Price.unwrap(p)`, the value type read off `p`.
+  if (expr.callee.kind === "identifier" && expr.callee.name === "unwrap" && expr.args.length === 1) {
+    const t = inferType(expr.args[0]!, ctx);
+    if (t?.kind === "custom" && ctx.valueTypes?.has(t.name)) return `${t.name}.unwrap(${emit(expr.args[0]!, ctx)})`;
   }
   if (expr.callee.kind === "identifier" && expr.callee.name === "validate" && expr.args.length === 1) {
     const arg = emit(expr.args[0]!, ctx);

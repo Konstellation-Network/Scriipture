@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { resolveChain, CHAINS } from "../src/deploy/networks";
 import { ConfigSchema } from "../src/config/schema";
+import { defaultNetworkFor } from "../src/deploy/deployer";
 
 const networks = {
   ark: { rpcUrl: "https://rpc.example-ark.io", chainId: 424242, privateKeyEnv: "ARK_PRIVATE_KEY" },
@@ -45,5 +46,26 @@ describe("resolveChain", () => {
     });
     expect(resolveChain("ark", parsed.networks as any)).toBeDefined();
     expect(Object.keys(CHAINS)).not.toContain("ark");
+  });
+});
+
+describe("built-in networks", () => {
+  it("covers the major L2s and their testnets", () => {
+    const ids = Object.fromEntries(Object.entries(CHAINS).map(([k, c]) => [k, (c as any).id]));
+    expect(ids).toMatchObject({
+      optimism: 10, "optimism-sepolia": 11155420,
+      arbitrum: 42161, "arbitrum-sepolia": 421614,
+      polygon: 137, "polygon-amoy": 80002,
+    });
+  });
+
+  it("deploys to any built-in network without a config entry", () => {
+    // `sepolia` and `mainnet` used to throw "not configured" here, though resolveChain knew them.
+    for (const name of Object.keys(CHAINS)) {
+      const net = defaultNetworkFor(name);
+      expect(net.chainId).toBe((CHAINS as any)[name].id);
+      expect(net.rpcUrl).toMatch(/^https?:\/\//);
+    }
+    expect(() => defaultNetworkFor("nope")).toThrow(/not configured/);
   });
 });

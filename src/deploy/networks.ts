@@ -1,6 +1,8 @@
 import { defineChain } from "viem";
 import type { NetworkConfig } from "../config/schema";
-import { sepolia, mainnet, base, baseSepolia } from "viem/chains";
+import {
+  sepolia, mainnet, base, baseSepolia, optimism, optimismSepolia, arbitrum, arbitrumSepolia, polygon, polygonAmoy,
+} from "viem/chains";
 
 export const anvil = defineChain({
   id: 31337,
@@ -15,6 +17,12 @@ export const CHAINS = {
   mainnet,
   base,
   "base-sepolia": baseSepolia,
+  optimism,
+  "optimism-sepolia": optimismSepolia,
+  arbitrum,
+  "arbitrum-sepolia": arbitrumSepolia,
+  polygon,
+  "polygon-amoy": polygonAmoy,
 };
 
 export type KnownNetwork = keyof typeof CHAINS;

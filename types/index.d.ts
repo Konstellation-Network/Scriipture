@@ -205,6 +205,71 @@ declare module "scriipture" {
    */
   export type FixedArray<T, N extends number> = T[] & { readonly length: N };
 
+  /**
+   * A user-defined value type: `type Price = ValueType<Uint128, "Price">` →
+   * `type Price is uint128;`. Like Solidity's, it is opaque -- no arithmetic,
+   * and no mixing with the type it wraps -- until converted with `wrap` /
+   * `unwrap`. The string must be the alias's own name.
+   */
+  export type ValueType<T, Name extends string> = { readonly __valueType: Name; readonly __underlying: T };
+  /** The type a `ValueType` wraps. */
+  export type UnderlyingOf<V> = V extends ValueType<infer U, string> ? U : never;
+  /** `wrap<Price>(x)` → `Price.wrap(x)`. The value type must be written. */
+  export function wrap<V extends ValueType<unknown, string>>(value: UnderlyingOf<V>): V;
+  /** `unwrap(p)` → `Price.unwrap(p)`. */
+  export function unwrap<V extends ValueType<unknown, string>>(value: V): UnderlyingOf<V>;
+
+  /**
+   * Function types. A TS function type is an `internal` Solidity one:
+   * `(a: bigint) => boolean` → `function (uint256) internal returns (bool)`.
+   * These markers adjust it and are otherwise the function type itself:
+   * `External<F>` → `external` (e.g. `at<I>(a).f` as a callback),
+   * `View<F>` / `Pure<F>` / `Payable<F>` → its mutability. A function that takes
+   * or returns an internal one is `internal` itself unless marked otherwise.
+   */
+  export type External<F extends (...args: any[]) => any> = F;
+  export type View<F extends (...args: any[]) => any> = F;
+  export type Pure<F extends (...args: any[]) => any> = F;
+  export type Payable<F extends (...args: any[]) => any> = F;
+
+  /**
+   * Deploys a contract with CREATE2 (`salt`) and / or ether for its
+   * constructor (`value`, which needs a `/** @payable *\/` constructor):
+   * `create(Child, { salt: s, value: v }, a)` → `new Child{salt: s, value: v}(a)`.
+   */
+  export function create<C extends abstract new (...args: any[]) => any>(
+    contract: C,
+    options: { salt?: Bytes32; value?: bigint },
+    ...args: ConstructorParameters<C>
+  ): InstanceType<C>;
+
+  /**
+   * In a `catch` block: the clause for a revert with a reason string,
+   * `catch Error(string memory reason) { … }`. The rest of the block is the
+   * catch-all; leave it empty (and the `catch` unbound) to let any other
+   * failure revert.
+   */
+  export function catchError(handler: (reason: string) => void): void;
+  /** In a `catch` block: the clause for a panic, `catch Panic(uint256 code) { … }` (0x11 overflow, 0x12 division by zero, …). */
+  export function catchPanic(handler: (code: bigint) => void): void;
+
+  /**
+   * On a class: makes it a Solidity `library`. Its methods are `static` and
+   * `internal` unless marked, so they are inlined into the contracts that
+   * call them; `static readonly X = …` declares a library constant.
+   */
+  export function library(target: Function): void;
+  /** On a class: `@using(Lib)` → `using Lib for *;`, `@using<bigint>(Lib)` → `using Lib for uint256;`. */
+  export function using<T = unknown>(lib: Function): (target: Function) => void;
+  /**
+   * Gives a method the Solidity name of another, so two functions can share
+   * one: `@overload("transfer") transferWithData(to, v, data)` → `function transfer(…)`.
+   * Calls by the TS name are emitted under the Solidity one.
+   */
+  export function overload(name: string): any;
+  /** On a state variable: EIP-1153 transient storage, `bool transient locked;`. Reset at the end of every transaction. */
+  export function transient(...args: any[]): any;
+
   export function validate(addr: Address): CheckedAddress;
 
   export function storage(...args: any[]): any;
@@ -268,7 +333,10 @@ declare module "scriipture" {
    * impossible to emit without a cast).
    */
   export type Indexed<T> = T;
-  /** Declares a Solidity event. The method body is ignored. */
+  /**
+   * Declares a Solidity event. The method body is ignored.
+   * `@event({ anonymous: true })` → `event E(…) anonymous;` (no signature topic, up to 4 indexed).
+   */
   export function event(...args: any[]): any;
   /** Declares a Solidity custom error. The method body is ignored. */
   export function error(...args: any[]): any;

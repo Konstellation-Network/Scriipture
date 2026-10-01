@@ -290,3 +290,157 @@ describe("examples/crowdfund: a full sample contract", () => {
     expect(run.status).toBe(0);
   }, 180_000);
 });
+
+describe("tests/contracts/Advanced.ts: libraries, free functions, value types and the rest", () => {
+  const FILE = path.join(ROOT, "tests/contracts/Advanced.ts");
+  const r = build([FILE], { secure: true });
+  const file = (name: string) => r.emitted.find((e) => e.name === name)!.solidity;
+
+  it("parses, passes the secure-mode validator, and compiles", () => {
+    expect({ parse: r.parse, validate: r.validate, solc: r.solc }).toEqual({ parse: [], validate: [], solc: [] });
+    expect(r.artifacts.sort()).toEqual(["Advanced", "Broken", "IMeasure", "MathLib", "Measurer"]);
+    expect(r.emitted.map((e) => [e.name, e.kind])).toContainEqual(["Advanced.defs", "defs"]);
+  }, 60_000);
+
+  it("a @library class is a library of internal functions, attached with using … for", () => {
+    expect(file("MathLib")).toContain("library MathLib {");
+    expect(file("MathLib")).toContain("uint256 public constant ONE = 1;");
+    expect(file("MathLib")).toContain("function max(uint256 a, uint256 b) internal pure returns (uint256) {");
+    expect(file("Advanced")).toContain("using MathLib for *;");
+    expect(file("Advanced")).toContain("put(MathLib.max(a, b));");
+    expect(file("Advanced")).toContain('import "./MathLib.sol";');
+  });
+
+  it("free functions, file-level constants, and the types they and the interface share go to the .defs file", () => {
+    const defs = file("Advanced.defs");
+    expect(defs).toContain("type Price is uint128;");
+    expect(defs).toContain("struct Point {");
+    expect(defs).toContain("uint256 constant MAX_AMOUNT = 1000000;");
+    expect(defs).toContain('bytes32 constant TAG = keccak256("advanced");');
+    expect(defs).toContain("function clamp(uint256 v, uint256 hi) pure returns (uint256) {");
+    expect(defs).toContain("function origin() pure returns (Point memory) {");
+    for (const name of ["Advanced", "Measurer", "MathLib", "IMeasure"]) {
+      expect(file(name)).toContain('import "./Advanced.defs.sol";');
+      expect(file(name)).not.toContain("struct Point");
+    }
+    expect(file("IMeasure")).toContain("function area(Point calldata p) external view returns (uint256);");
+  });
+
+  it("overloads, named returns, value types, function types, CREATE2, typed catches, anonymous events, transient", () => {
+    const a = file("Advanced");
+    expect(a).toContain("function put(uint256 a) public {");
+    expect(a).toContain("function put(uint256 a, uint256 b) public {");
+    expect(a).toContain("function split() public view returns (uint256 half, bool odd) {");
+    expect(a).toContain("half = total / 2;");
+    expect(a).toContain("last = Price.wrap(p);");
+    expect(a).toContain("return Price.unwrap(last);");
+    expect(a).toContain("function applyTwice(function (uint256) internal pure returns (uint256) f, uint256 x) private pure returns (uint256) {");
+    expect(a).toContain("return applyTwice(triple, x);");
+    expect(a).toContain("Measurer m = new Measurer{salt: salt, value: msg.value}(side);");
+    expect(a).toMatch(/\} catch Error\(string memory\) \{[\s\S]*\} catch Panic\(uint256 code\) \{[\s\S]*\} catch \{/);
+    expect(a).toContain("event Moved(address indexed from, address indexed to, uint256 indexed amount, bytes32 indexed tag) anonymous;");
+    expect(a).toContain("bool public transient entered;");
+    expect(a).toContain("pragma solidity ^0.8.28;");
+    expect(file("Measurer")).toContain("constructor(uint256 side_) payable {");
+    expect(file("Measurer")).toContain("side = side_;");
+  });
+
+  it("type-checks against the published typings", () => {
+    const program = ts.createProgram([FILE, path.join(ROOT, "types/index.d.ts")], {
+      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
+      strict: true, experimentalDecorators: true, noEmit: true, skipLibCheck: true, types: [],
+      baseUrl: ROOT, paths: { scriipture: ["./types/index.d.ts"] },
+    });
+    expect(ts.getPreEmitDiagnostics(program).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"))).toEqual([]);
+  }, 60_000);
+
+  const forge = spawnSync("forge", ["--version"], { encoding: "utf8" });
+  it.skipIf(forge.status !== 0)("behaves as written on the EVM (forge, when installed)", () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-advanced-forge-"));
+    fs.mkdirSync(path.join(project, "src"));
+    fs.mkdirSync(path.join(project, "test"));
+    for (const e of r.emitted) fs.writeFileSync(path.join(project, "src", `${e.name}.sol`), e.solidity, "utf8");
+    fs.copyFileSync(path.join(ROOT, "tests/contracts/Advanced.behavior.t.sol"), path.join(project, "test", "Advanced.t.sol"));
+    fs.writeFileSync(path.join(project, "foundry.toml"), '[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\nlibs = []\noffline = true\n', "utf8");
+    const run = spawnSync("forge", ["test", "--root", project], { encoding: "utf8" });
+    expect(run.stdout + run.stderr).toContain("8 passed; 0 failed");
+    expect(run.status).toBe(0);
+  }, 180_000);
+});
+
+describe("misuse of the advanced spellings is reported, not miscompiled", () => {
+  const diagnostics = (src: string) => {
+    const r = buildSource(src);
+    return [...r.parse, ...r.validate];
+  };
+  const has = (d: string[], s: string) => expect(d.some((m) => m.includes(s))).toBe(true);
+
+  it("a library with state, a non-static method, a base or a constructor", () => {
+    const d = diagnostics(`
+@library export class L extends Base { count: bigint = 0n; constructor() {} f(): bigint { return 1n; } }
+export class Base { @storage n: bigint = 0n; }`);
+    has(d, "cannot extend or implement");
+    has(d, "cannot hold state");
+    has(d, "must be `static`");
+    has(d, "cannot have a constructor");
+  });
+
+  it("an unknown class decorator, and @using without a library", () => {
+    has(diagnostics(`@sealed export class C { @storage n: bigint = 0n; }`), "@sealed on class C");
+    has(diagnostics(`@using export class C { @storage n: bigint = 0n; }`), "`@using` takes one library class");
+  });
+
+  it("a value type whose brand does not match, or over a non-value type", () => {
+    has(diagnostics(`type Price = ValueType<Uint128, "Cost">; export class C { @storage p: Price; }`), 'must be the type\'s own name, "Price"');
+    has(diagnostics(`type Name = ValueType<string, "Name">; export class C { @storage p: Name; }`), "wraps an elementary value type");
+  });
+
+  it("wrap without its type, and unwrap of something that is not a value type", () => {
+    has(diagnostics(`type Price = ValueType<Uint128, "Price">; export class C { @storage p: Price; f(x: Uint128): void { this.p = wrap(x); } }`), "`wrap` needs the value type");
+    has(diagnostics(`export class C { @pure f(x: bigint): bigint { return unwrap(x); } }`), "value-type-unwrap");
+  });
+
+  it("a file-level let, and a file-level constant without a value", () => {
+    has(diagnostics(`let counter = 0n; export class C { @storage n: bigint = 0n; }`), 'file-level "counter" is not `const`');
+  });
+
+  it("create with an option other than salt and value, or without a contract", () => {
+    has(diagnostics(`export class K {} export class C { f(): void { create(K, { gas: 5n }); } }`), "`salt` and `value` only");
+    has(diagnostics(`export class C { f(): void { create({ salt: 1n }); } }`), "`create` takes a contract class");
+  });
+
+  it("@overload without a usable name, and a transient variable with an initializer", () => {
+    has(diagnostics(`export class C { @storage n: bigint = 0n; @overload(5n) f(): void { this.n = 1n; } }`), "`@overload` takes the Solidity name");
+    has(diagnostics(`export class C { @transient @storage n: bigint = 1n; }`), "cannot have an initializer");
+  });
+
+  it("an anonymous event allows four indexed parameters, not five", () => {
+    expect(diagnostics(`export class C { @event({ anonymous: true }) E(a: Indexed<bigint>, b: Indexed<bigint>, c: Indexed<bigint>, d: Indexed<bigint>): void {} }`)).toEqual([]);
+    has(diagnostics(`export class C { @event({ anonymous: true }) E(a: Indexed<bigint>, b: Indexed<bigint>, c: Indexed<bigint>, d: Indexed<bigint>, e: Indexed<bigint>): void {} }`), "at most 4 on an anonymous event");
+    has(diagnostics(`export class C { @event({ indexed: true }) E(a: bigint): void {} }`), "`{ anonymous: true }`");
+  });
+
+  it("free functions are validated like methods", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scriipture-free-"));
+    const f = path.join(dir, "C.ts");
+    fs.writeFileSync(f, `export function who(): Address { return tx.origin; } export class C { @storage n: bigint = 0n; }`, "utf8");
+    has(build([f], { secure: true }).validate, "no-tx-origin");
+  });
+});
+
+describe("a parameter or local named like a state variable no longer writes to itself", () => {
+  it("constructor(owner) { this.owner = owner } sets the state variable", () => {
+    const r = buildSource(`
+export class C {
+  @storage owner: Address; @storage limit: bigint = 0n;
+  constructor(owner: Address) { this.owner = owner; }
+  setLimit(limit: bigint): void { const owner = msg.sender; require(owner === this.owner, "no"); this.limit = limit; }
+}`);
+    expect(r.solc).toEqual([]);
+    expect(r.sol).toContain("constructor(address owner_) {");
+    expect(r.sol).toContain("owner = owner_;");
+    expect(r.sol).toContain("function setLimit(uint256 limit_) public {");
+    expect(r.sol).toContain("address owner_ = msg.sender;");
+    expect(r.sol).toContain("limit = limit_;");
+  }, 30_000);
+});

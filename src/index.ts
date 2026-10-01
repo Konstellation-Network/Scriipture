@@ -8,7 +8,8 @@
 export { parseContractFiles } from "./parser/parse";
 export type { ParseDiagnostic, ParseResult } from "./parser/parse";
 
-export { emitProgram, emitContract } from "./emitter/emit";
+export { emitProgram, emitContract, sharedDefinitions } from "./emitter/emit";
+export type { SharedDefinitions } from "./emitter/emit";
 export type { EmitOptions, EmittedContract } from "./emitter/emit";
 
 export { validateProgram, validateContract } from "./validator/rules";
@@ -49,6 +50,10 @@ export type {
   IREventDecl,
   IRStructDecl,
   IREnumDecl,
+  IRInterface,
+  IRFileScope,
+  IRValueTypeDecl,
+  IRCatchClause,
   IRPrimitiveName,
   IntBits,
   BytesN,

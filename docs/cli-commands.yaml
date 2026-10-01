@@ -1,5 +1,5 @@
 # Auto-generated from commander introspection — do not edit by hand
-# Generated: 2026-05-12T21:02:30.876Z
+# Generated: 2026-10-01T11:38:23.071Z
 version: 0.1.0
 commands:
   - name: parse
@@ -11,17 +11,19 @@ commands:
       - flag: "-h, --help"
         description: display help for command
   - name: build
-    description: Transpile TypeScript contract(s) to
+    description: Transpile TypeScript contract(s) to Solidity (optimizer applied by default)
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
       - flag: "-o, --out <dir>"
-        description: "output directory (default: \"out/sol\")"
+        description: output directory
       - flag: --no-optimize
         description: skip optimizer passes
+      - flag: --reorder-storage
+        description: let pack-slots reorder state variables to save slots (rewrites the storage layout; never use with upgradeable proxies)
+      - flag: --no-validate
+        description: emit even when the validator reports errors (the output may not match the source)
       - flag: "-h, --help"
         description: display help for command
     examples:
@@ -30,8 +32,6 @@ commands:
   - name: validate
     description: Run static checks on contract(s)
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
@@ -51,10 +51,8 @@ commands:
       - flag: "-h, --help"
         description: display help for command
   - name: compile
-    description: Compile .sol files to ABI + bytecode
+    description: Compile .sol files to ABI + bytecode artifacts
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
@@ -65,23 +63,21 @@ commands:
     examples:
       - scriipture compile out/sol
   - name: deploy
-    description: Deploy a compiled artifact (auto-uses
+    description: Deploy a compiled artifact (auto-uses browser wallet when no --wallet given; auto-verifies if etherscan-key is configured)
     arguments:
-      - name: options
-        required: false
       - name: contract
         required: true
     options:
       - flag: "-n, --network <name>"
-        description: "network: anvil | base-sepolia | base | sepolia |"
+        description: "network: anvil | base-sepolia | base | sepolia | mainnet | optimism | optimism-sepolia | arbitrum | arbitrum-sepolia | polygon | polygon-amoy (or any configured)"
       - flag: "-a, --args <args...>"
-        description: "constructor arguments (default: [])"
+        description: constructor arguments
       - flag: "-w, --wallet <name>"
-        description: use a named hot wallet from ~/.scriipture/wallets/
+        description: use a named hot wallet from ~/.scriipture/wallets/ (otherwise browser-wallet)
       - flag: --no-browser
-        description: force a hot wallet (requires --wallet) — disables
+        description: force a hot wallet (requires --wallet) — disables browser fallback
       - flag: --no-verify
-        description: skip auto-verify on Etherscan even when etherscan-key
+        description: skip auto-verify on Etherscan even when etherscan-key is configured
       - flag: "-h, --help"
         description: display help for command
     examples:
@@ -89,37 +85,101 @@ commands:
       - scriipture deploy MyToken -n base-sepolia -a 1000000
       - scriipture deploy MyToken -n base --no-verify --wallet prod
   - name: verify-source
-    description: Submit source to Etherscan (v2
+    description: Submit source to Etherscan (v2 multichain) to verify an already-deployed contract
     arguments:
-      - name: options
-        required: false
       - name: contract
         required: true
     options:
       - flag: "-n, --network <name>"
         description: network name
       - flag: "--address <addr>"
-        description: deployed contract address (otherwise read from
+        description: deployed contract address (otherwise read from out/deploy-log)
       - flag: "-a, --args <args...>"
-        description: constructor arguments used at deploy (otherwise read
+        description: constructor arguments used at deploy (otherwise read from log)
       - flag: "--api-key <key>"
-        description: Etherscan API key (otherwise read ETHERSCAN_API_KEY
+        description: Etherscan API key (otherwise read ETHERSCAN_API_KEY env)
       - flag: "-h, --help"
         description: display help for command
     examples:
       - scriipture verify-source MyToken -n base-sepolia
   - name: config
-    description: Manage user-level config
+    description: Manage user-level config (~/.scriipture/config.json)
+    options:
+      - flag: "-h, --help"
+        description: display help for command
+  - name: config set
+    description: "Set a config value (e.g. etherscan-key, default-network)"
+    arguments:
+      - name: key
+        required: true
+      - name: value
+        required: true
+    options:
+      - flag: "-h, --help"
+        description: display help for command
+  - name: config get
+    description: Print a config value (sensitive keys masked)
+    arguments:
+      - name: key
+        required: true
+    options:
+      - flag: "-h, --help"
+        description: display help for command
+  - name: config list
+    description: List all config values (sensitive keys masked unless --reveal)
+    options:
+      - flag: --reveal-keys
+        description: print sensitive values in full
+      - flag: "-h, --help"
+        description: display help for command
+  - name: config unset
+    description: Remove a config value
+    arguments:
+      - name: key
+        required: true
     options:
       - flag: "-h, --help"
         description: display help for command
   - name: wallet
-    description: Manage local hot wallets
+    description: Manage local hot wallets (~/.scriipture/wallets/)
     options:
       - flag: "-h, --help"
         description: display help for command
+  - name: wallet new
+    description: "Generate a new EVM keypair stored at ~/.scriipture/wallets/<name>.json"
+    arguments:
+      - name: name
+        required: true
+    options:
+      - flag: "-h, --help"
+        description: display help for command
+  - name: wallet show
+    description: Show wallet address (and private key with --reveal-key)
+    arguments:
+      - name: name
+        required: true
+    options:
+      - flag: --reveal-key
+        description: also print the private key
+      - flag: "-h, --help"
+        description: display help for command
+  - name: wallet list
+    description: List local wallets
+    options:
+      - flag: "-h, --help"
+        description: display help for command
+  - name: wallet balance
+    description: Check the wallet balance on a network
+    arguments:
+      - name: name
+        required: true
+    options:
+      - flag: "-n, --network <name>"
+        description: network name
+      - flag: "-h, --help"
+        description: display help for command
   - name: init
-    description: Scaffold a new Scriipture project
+    description: "Scaffold a new Scriipture project (contracts/, config, tsconfig, package.json scripts)"
     arguments:
       - name: dir
         required: false
@@ -130,14 +190,16 @@ commands:
       - scriipture init my-app
       - scriipture init .
   - name: doctor
-    description: "Check environment: node, bun, solc,"
+    description: Check environment; pass --fix to auto-install missing tools
     options:
+      - flag: --fix
+        description: download forge/anvil + pull slither/mythril Docker images to make scriipture fully self-contained
       - flag: "-h, --help"
         description: display help for command
     examples:
       - scriipture doctor
   - name: gasdiff
-    description: "Compare bytecode size: unoptimized vs"
+    description: "Compare bytecode size: unoptimized vs optimized"
     arguments:
       - name: input
         required: true
@@ -147,10 +209,8 @@ commands:
     examples:
       - scriipture gasdiff contracts
   - name: audit
-    description: Run native rules + Slither static
+    description: Run native rules + Slither static analysis
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
@@ -163,10 +223,8 @@ commands:
     examples:
       - scriipture audit contracts
   - name: audit-pack
-    description: Emit per-contract audit pack (TS + Sol +
+    description: Emit per-contract audit pack (TS + Sol + sourcemap + notes + slither + zip)
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
@@ -179,24 +237,18 @@ commands:
     examples:
       - scriipture audit-pack contracts
   - name: trace
-    description: Rewrite forge/solc stack traces to use TS
-    arguments:
-      - name: options
-        required: false
+    description: Rewrite forge/solc stack traces to use TS line refs
     options:
       - flag: "-i, --input <file>"
         description: trace text input file (otherwise reads stdin)
       - flag: "--sourcemap-dir <dir>"
-        description: "where to find <Contract>.sourcemap.json (default:"
+        description: "where to find <Contract>.sourcemap.json (default: out/sol)"
       - flag: "-h, --help"
         description: display help for command
     examples:
       - "forge test 2>&1 | scriipture trace"
   - name: test
-    description: Transpile .t.ts tests to .t.sol and run
-    arguments:
-      - name: options
-        required: false
+    description: Transpile .t.ts tests to .t.sol and run forge
     options:
       - flag: "-p, --pattern <pattern>"
         description: forge --match-test pattern
@@ -212,27 +264,29 @@ commands:
       - scriipture test
       - scriipture test -p testFuzz
   - name: verify
-    description: Run the 8-gate security verification
+    description: Run the 9-gate security verification pipeline
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
       - flag: "--skip <gates>"
-        description: "comma-separated gates to skip: fuzz, smt, slither,"
+        description: "comma-separated gates to skip: fuzz, smt, slither, mythril, invariants, patterns, fuzz-run"
       - flag: "--fuzz-runs <n>"
         description: forge fuzz iterations per method (default 1000)
+      - flag: --deep
+        description: "enable Mythril symbolic execution (Gate 4, ~90s/contract)"
+      - flag: "--mythril-timeout <s>"
+        description: Mythril execution timeout per contract in seconds
+      - flag: --reorder-storage
+        description: let pack-slots reorder state variables to save slots (rewrites the storage layout)
       - flag: "-h, --help"
         description: display help for command
     examples:
       - scriipture verify contracts
       - "scriipture verify contracts --skip fuzz,invariants"
   - name: secure-deploy
-    description: Run verification gates THEN deploy
+    description: Run verification gates THEN deploy (refuses on any gate failure)
     arguments:
-      - name: options
-        required: false
       - name: input
         required: true
     options:
@@ -241,7 +295,7 @@ commands:
       - flag: "-n, --network <name>"
         description: network name
       - flag: "-a, --args <args...>"
-        description: "constructor arguments (default: [])"
+        description: constructor arguments
       - flag: "--artifacts <dir>"
         description: artifacts directory
       - flag: --no-fuzz
@@ -254,17 +308,17 @@ commands:
         description: skip invariant tests
       - flag: --no-patterns
         description: skip pattern library check
+      - flag: --deep
+        description: "also run Mythril symbolic execution (Gate 4, ~90s/contract)"
+      - flag: "--skip <gates>"
+        description: "comma-separated gates to skip: fuzz, smt, slither, mythril, invariants, patterns, fuzz-run"
+      - flag: "--fuzz-runs <n>"
+        description: forge fuzz iterations per method (default 1000)
+      - flag: "--mythril-timeout <s>"
+        description: Mythril execution timeout per contract in seconds
+      - flag: "--allow-skipped-gates <justification>"
+        description: deploy even though gates were skipped; the reason is recorded on every skipped gate in the attestation
       - flag: "-h, --help"
         description: display help for command
     examples:
       - scriipture secure-deploy contracts -c Counter -n base-sepolia
-  - name: help
-    description: display help for command
-    arguments:
-      - name: command
-        required: false
-    options:
-      - flag: "-V, --version"
-        description: output the version number
-      - flag: "-h, --help"
-        description: display help for command

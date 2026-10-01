@@ -1,3 +1,4 @@
+import path from "node:path";
 import type {
   IRContract,
   IRExpression,
@@ -48,6 +49,7 @@ export const RULE_IDS = [
   "undeclared-event",
   "unknown-base-contract",
   "unknown-decorator",
+  "value-type-unwrap",
   "view-no-mutate",
 ] as const;
 
@@ -84,6 +86,18 @@ export function validateProgram(program: IRProgram, opts: ValidateOptions = {}):
         loc: contract.loc,
         fix: `define ${base} in a file passed to this build, or extend one of the bundled bases`,
       });
+    }
+  }
+  // Free functions get the per-function rules too: a `tx.origin` check or an
+  // unchecked call is no safer outside a contract.
+  for (const scope of program.files ?? []) {
+    if (scope.functions.length === 0) continue;
+    const pseudo: IRContract = {
+      name: path.basename(scope.sourceFile), bases: [], stateVars: [], functions: scope.functions, errors: [], events: [],
+      structs: scope.structs, enums: scope.enums, valueTypes: scope.valueTypes, sourceFile: scope.sourceFile,
+    };
+    for (const fn of scope.functions) {
+      for (const rule of RULES) for (const d of rule(pseudo, fn, program)) if (!functionHasAllowFor(fn, d.rule)) out.push(d);
     }
   }
   if (opts.secure) {
@@ -132,11 +146,11 @@ function functionHasAllowFor(fn: { decorators: { name: string }[] }, rule: strin
 const METHOD_DECORATORS = new Set([
   ...Object.keys(FUNCTION_DECORATORS),
   ...SAFETY_OVERRIDE_DECORATORS,
-  "solidity", "assembly", "event", "error", "invariant", "throws", "modifier", "virtual",
+  "solidity", "assembly", "event", "error", "invariant", "throws", "modifier", "virtual", "overload",
 ]);
 
 /** Decorators that mean something on a state variable. */
-const FIELD_DECORATORS = new Set(["storage", "public", "private", "internal"]);
+const FIELD_DECORATORS = new Set(["storage", "public", "private", "internal", "transient"]);
 
 /**
  * A decorator nothing recognises used to vanish: `@onlyAdmin` on a function
@@ -285,13 +299,15 @@ function ruleEventDeclarations(contract: IRContract, program?: IRProgram): Diagn
 
   for (const ev of contract.events) {
     const indexed = ev.params.filter((p) => p.indexed);
-    if (indexed.length > 3) {
+    // An anonymous event spends no topic on its signature, so it has room for a fourth.
+    const max = ev.anonymous ? 4 : 3;
+    if (indexed.length > max) {
       out.push({
         rule: "event-too-many-indexed",
         severity: "error",
-        message: `event "${ev.name}" has ${indexed.length} indexed parameters; Solidity allows at most 3`,
+        message: `event "${ev.name}" has ${indexed.length} indexed parameters; Solidity allows at most ${max}${ev.anonymous ? " on an anonymous event" : ""}`,
         loc: ev.loc,
-        fix: `drop Indexed<> from ${indexed.slice(3).map((p) => `"${p.name}"`).join(", ")}`,
+        fix: `drop Indexed<> from ${indexed.slice(max).map((p) => `"${p.name}"`).join(", ")}`,
       });
     }
   }
@@ -361,7 +377,32 @@ const RULES: Rule[] = [
   ruleNullishFallback,
   ruleDestructureShape,
   ruleStorageAlias,
+  ruleValueTypeUnwrap,
 ];
+
+/**
+ * `unwrap(p)` is `Price.unwrap(p)`, with `Price` read off the type of `p`.
+ * When that type is not known here -- `p` comes from somewhere inference
+ * cannot follow -- the call would reach solc as an undeclared `unwrap`.
+ */
+function ruleValueTypeUnwrap(contract: IRContract, fn: IRFunction, program?: IRProgram): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  walkScoped(fn.body, typeEnvFor(contract, fn, program), (stmt, scope) => {
+    walkExpressionsInStatement(stmt, (e) => {
+      if (e.kind !== "call" || e.callee.kind !== "identifier" || e.callee.name !== "unwrap" || e.args.length !== 1) return;
+      const t = inferType(e.args[0]!, scope);
+      if (t?.kind === "custom" && scope.valueTypes?.has(t.name)) return;
+      out.push({
+        rule: "value-type-unwrap",
+        severity: "error",
+        message: `\`unwrap(…)\` in "${fn.name}": ${t ? "the value is not a user-defined value type" : "the value's type is not known"}, so there is no \`T.unwrap\` to emit`,
+        loc: stmt.loc ?? fn.loc,
+        fix: "name the value type: `unwrap<Price>(p)`",
+      });
+    });
+  });
+  return out;
+}
 
 /**
  * `a ?? b` has no Solidity counterpart: a missing mapping key reads as the
@@ -748,7 +789,7 @@ function ruleStateMutationWithoutEvent(contract: IRContract, fn: IRFunction): Di
 }
 
 function ruleNoMsgValueInNonPayable(_contract: IRContract, fn: IRFunction): Diagnostic[] {
-  if (fn.decorators.some((d) => d.name === "payable")) return [];
+  if (fn.decorators.some((d) => d.name === "payable") || fn.payable) return [];
   const out: Diagnostic[] = [];
   walkStatements(fn.body, (stmt) => {
     walkExpressionsInStatement(stmt, (e) => {

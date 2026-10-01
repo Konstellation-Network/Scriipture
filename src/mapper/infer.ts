@@ -1,4 +1,4 @@
-import type { IRContract, IRExpression, IRFunction, IRProgram, IRStatement, IRStructDecl, IRType } from "../ir/types";
+import type { IRContract, IRExpression, IRFileScope, IRFunction, IRProgram, IRStatement, IRStructDecl, IRType } from "../ir/types";
 import { exprContains, walkStatements } from "../optimizer/walk";
 import { aliasedPrimitive, sameType } from "./types";
 
@@ -28,6 +28,10 @@ export interface TypeEnv {
    * be a `bool` and `new Child(v)` a `Child`.
    */
   externalFns?: Map<string, Map<string, IRType>>;
+  /** File-level constants (`const MAX = 100n` → `uint256 constant MAX`) visible here. */
+  globalTypes?: Map<string, IRType>;
+  /** User-defined value types by name, with the type each wraps. */
+  valueTypes?: Map<string, IRType>;
 }
 
 export function unwrapExpr(expr: IRExpression): IRExpression {
@@ -158,7 +162,7 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
   const e = unwrapExpr(expr);
   switch (e.kind) {
     case "identifier":
-      return env.localTypes?.get(e.name);
+      return env.localTypes?.get(e.name) ?? env.globalTypes?.get(e.name);
     case "member": {
       if (e.object.kind === "this") {
         const t = env.stateVarTypes?.get(e.property);
@@ -190,6 +194,20 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
         return elementOf(inferType(e.callee.object, env));
       }
       if (isLowLevelCall(e)) return LOW_LEVEL_RESULT;
+      // Through a function pointer: a parameter, local or state variable of function type.
+      const fnType = e.callee.kind === "identifier" || (e.callee.kind === "member" && e.callee.object.kind === "this") ? inferType(e.callee, env) : undefined;
+      if (fnType?.kind === "function") {
+        return fnType.returns.length === 0 ? undefined : fnType.returns.length === 1 ? fnType.returns[0] : { kind: "tuple", elements: fnType.returns };
+      }
+      // `Price.wrap(x)` is a `Price`; `Price.unwrap(p)` is what `Price` wraps.
+      if (e.callee.kind === "member" && e.callee.object.kind === "identifier" && env.valueTypes?.has(e.callee.object.name)) {
+        if (e.callee.property === "wrap") return { kind: "custom", name: e.callee.object.name };
+        if (e.callee.property === "unwrap") return env.valueTypes.get(e.callee.object.name);
+      }
+      if (e.callee.kind === "identifier" && e.callee.name === "unwrap" && e.args.length === 1) {
+        const v = inferType(e.args[0]!, env);
+        return v?.kind === "custom" ? env.valueTypes?.get(v.name) : undefined;
+      }
       if (e.callee.kind === "member" && e.callee.object.kind === "identifier" && !env.localTypes?.has(e.callee.object.name)) {
         const ns = e.callee.object.name;
         // `abi.decode<[bigint, Address]>(data)` is whatever it was told to decode.
@@ -210,6 +228,11 @@ export function inferType(expr: IRExpression, env: TypeEnv): IRType | undefined 
         // `IERC20(t)`, the lowering of `at<IERC20>(t)`: the contract at that address.
         if (env.externalFns?.has(name)) return { kind: "custom", name };
         return undefined;
+      }
+      // `MathLib.max(a, b)`: a library function, called on the library's name.
+      if (e.callee.kind === "member" && e.callee.object.kind === "identifier" && !env.localTypes?.has(e.callee.object.name)) {
+        const t = env.externalFns?.get(e.callee.object.name)?.get(e.callee.property);
+        if (t) return t;
       }
       // `IERC20(t).balanceOf(a)`: a function of another contract or interface in the build.
       if (e.callee.kind === "member") {
@@ -387,9 +410,12 @@ export function walkScoped(stmts: IRStatement[], env: TypeEnv, visit: (stmt: IRS
  * one in the other.
  */
 export function functionScope<T extends TypeEnv>(env: T, fn: IRFunction): T & Scope {
+  // Labelled return values (`[amount: bigint, ok: boolean]`) are locals from the first line.
+  const ret = fn.returnType;
+  const named = ret.kind === "tuple" && ret.names ? ret.names.flatMap((n, i) => (n ? [[n, ret.elements[i]!] as [string, IRType]] : [])) : [];
   return {
     ...env,
-    localTypes: new Map(fn.params.map((p) => [p.name, p.type])),
+    localTypes: new Map([...named, ...fn.params.map((p) => [p.name, p.type] as [string, IRType])]),
     storageLocals: new Set(fn.params.filter((p) => p.location === "storage").map((p) => p.name)),
   };
 }
@@ -417,20 +443,49 @@ export function contractTypeEnv(contract: IRContract, program?: IRProgram): Type
     lineage.push(c);
   };
   collect(contract);
+  // The file's free functions first: a contract's own function of the same name wins.
+  const scope = program?.files?.find((f) => f.sourceFile === contract.sourceFile);
+  for (const f of scope?.functions ?? []) fnReturnTypes.set(f.name, f.returnType);
   for (const c of lineage) {
     for (const f of c.functions) if (!f.isConstructor && !f.special) fnReturnTypes.set(f.name, f.returnType);
     for (const v of c.stateVars) stateVarTypes.set(v.name, v.type);
   }
-  const externalFns = new Map<string, Map<string, IRType>>();
-  for (const c of program?.contracts ?? []) {
-    externalFns.set(c.name, new Map(c.functions.filter((f) => !f.isConstructor && !f.special).map((f) => [f.name, f.returnType])));
-  }
-  for (const i of program?.interfaces ?? []) externalFns.set(i.name, new Map(i.functions.map((f) => [f.name, f.returnType])));
+  const externalFns = externalFunctionTypes(program);
   return {
     stateVarTypes,
     structs: new Map(contract.structs.map((s) => [s.name, s])),
     fnReturnTypes,
     externalFns,
+    globalTypes: new Map((scope?.constants ?? []).map((v) => [v.name, v.type])),
+    valueTypes: allValueTypes(program, contract.valueTypes),
+  };
+}
+
+function externalFunctionTypes(program?: IRProgram): Map<string, Map<string, IRType>> {
+  const externalFns = new Map<string, Map<string, IRType>>();
+  for (const c of program?.contracts ?? []) {
+    externalFns.set(c.name, new Map(c.functions.filter((f) => !f.isConstructor && !f.special).map((f) => [f.name, f.returnType])));
+  }
+  for (const i of program?.interfaces ?? []) externalFns.set(i.name, new Map(i.functions.map((f) => [f.name, f.returnType])));
+  return externalFns;
+}
+
+function allValueTypes(program: IRProgram | undefined, own: IRContract["valueTypes"]): Map<string, IRType> {
+  const out = new Map<string, IRType>();
+  for (const scope of program?.files ?? []) for (const v of scope.valueTypes) out.set(v.name, v.underlying);
+  for (const v of own ?? []) out.set(v.name, v.underlying);
+  return out;
+}
+
+/** The type environment of a source file's free functions and constants, which have no contract around them. */
+export function fileTypeEnv(scope: IRFileScope, program?: IRProgram): TypeEnv {
+  return {
+    stateVarTypes: new Map(),
+    structs: new Map(scope.structs.map((s) => [s.name, s])),
+    fnReturnTypes: new Map(scope.functions.map((f) => [f.name, f.returnType])),
+    externalFns: externalFunctionTypes(program),
+    globalTypes: new Map(scope.constants.map((v) => [v.name, v.type])),
+    valueTypes: allValueTypes(program, scope.valueTypes),
   };
 }
 

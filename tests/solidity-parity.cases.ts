@@ -230,3 +230,54 @@ export class C { @pure f(a: bigint, b: bigint): bigint { return (a + b) * 2n; } 
   { id: "o_not_on_group", feature: "!(a && b)", src: `
 export class C { @pure f(a: boolean, b: boolean): boolean { return !(a && b); } }`, expect: [/!\(a && b\)/] },
 ];
+
+/** The features that need more than a class; tests/contracts/Advanced.ts uses them together. */
+PARITY_CASES.push(
+  { id: "x_library", feature: "@library with using … for", src: `
+@library export class L { @pure static twice(a: bigint): bigint { return a * 2n; } }
+@using<bigint>(L) export class C { @pure f(a: bigint): bigint { return L.twice(a); } }`,
+    expect: [/library L \{/, /function twice\(uint256 a\) internal pure returns \(uint256\)/, /using L for uint256;/, /return L\.twice\(a\);/] },
+  { id: "x_free_function", feature: "free function + file-level constant", src: `
+const CAP = 10n;
+export function cap(a: bigint): bigint { return a > CAP ? CAP : a; }
+export class C { @pure f(a: bigint): bigint { return cap(a); } }`,
+    expect: [/uint256 constant CAP = 10;/, /function cap\(uint256 a\) pure returns \(uint256\)/, /import "\.\/C\.defs\.sol";/] },
+  { id: "x_free_view", feature: "free function reading the chain is not pure; @view tag", src: `
+/** @view */
+export function now(): bigint { return block.timestamp; }
+export class C { @view f(): bigint { return now(); } }`, expect: [/function now\(\) view returns \(uint256\)/] },
+  { id: "t_function_type", feature: "internal function type", src: `
+export class C { @pure private ap(f: Pure<(a: bigint) => bigint>, x: bigint): bigint { return f(x); }
+  @pure private inc(a: bigint): bigint { return a + 1n; } @pure g(x: bigint): bigint { return this.ap(this.inc, x); } }`,
+    expect: [/function \(uint256\) internal pure returns \(uint256\) f/] },
+  { id: "t_external_function_type", feature: "external function type parameter", src: `
+export class C { @storage n: bigint = 0n; call(cb: External<View<(a: bigint) => bigint>>): void { this.n = cb(1n); } }`,
+    expect: [/function call\(function \(uint256\) external view returns \(uint256\) cb\) public/] },
+  { id: "t_value_type", feature: "user-defined value type", src: `
+type Price = ValueType<Uint128, "Price">;
+export class C { @storage p!: Price; set(x: Uint128): void { this.p = wrap<Price>(x); } @view get(): Uint128 { return unwrap(this.p); } }`,
+    expect: [/type Price is uint128;/, /p = Price\.wrap\(x\);/, /return Price\.unwrap\(p\);/] },
+  { id: "f_overload", feature: "overloaded functions via @overload", src: `
+export class C { @storage n: bigint = 0n;
+  @overload("set") setOne(a: bigint): void { this.n = a; }
+  @overload("set") setTwo(a: bigint, b: bigint): void { this.setOne(a + b); } }`,
+    expect: [/function set\(uint256 a\) public/, /function set\(uint256 a, uint256 b\) public/, /set\(a \+ b\);/] },
+  { id: "f_named_returns", feature: "named return values", src: `
+export class C { @pure f(a: bigint): [sum: bigint, big: boolean] { const sum = a + 1n; return [sum, sum > 10n]; } }`,
+    expect: [/returns \(uint256 sum, bool big\)/, /sum = a \+ 1;/] },
+  { id: "x_create2", feature: "new C{salt: s, value: v}(…)", src: `
+export class K { @storage n: bigint; /** @payable */ constructor(n: bigint) { this.n = n; } }
+export class C { @payable make(s: Bytes32): Address { return address(create(K, { salt: s, value: msg.value }, 1n)); } }`,
+    expect: [/new K\{salt: s, value: msg\.value\}\(1\)/, /constructor\(uint256 n_\) payable/] },
+  { id: "e_catch_typed", feature: "catch Error(string) / catch Panic(uint256)", src: `
+interface IX { go(): bigint; }
+export class C { @storage why: string = ""; @storage code: bigint = 0n;
+  f(t: Address): void { try { at<IX>(t).go(); } catch { catchError((r) => { this.why = r; }); catchPanic((c) => { this.code = c; }); } } }`,
+    expect: [/catch Error\(string memory r\) \{/, /catch Panic\(uint256 c\) \{/] },
+  { id: "v_event_anonymous", feature: "anonymous event", src: `
+export class C { @storage n: bigint = 0n; @event({ anonymous: true }) Ping(v: bigint): void {} f(): void { this.n += 1n; emit(this.Ping(this.n)); } }`,
+    expect: [/event Ping\(uint256 v\) anonymous;/] },
+  { id: "s_transient", feature: "transient storage", src: `
+export class C { @transient @storage lock!: boolean; f(): void { this.lock = true; } }`,
+    expect: [/bool public transient lock;/, /pragma solidity \^0\.8\.28;/] },
+);

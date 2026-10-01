@@ -29,7 +29,7 @@ export class MyToken extends ERC20 {
 ```
 
 **Primary CTA:** `Get started` → `/docs`
-**Secondary CTA:** `View on GitHub` → `https://github.com/Worldstreet-Web-Services/scripture`
+**Secondary CTA:** `View on GitHub` → `https://github.com/Konstellation-Network/Scriipture`
 
 ---
 
@@ -137,7 +137,7 @@ Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 
 | Gate | Tool | What it catches |
 |---|---|---|
-| 1 | Native validator | `tx.origin`, `selfdestruct`, `delegatecall` to input, zero-address mint, integer division (27 rules) |
+| 1 | Native validator | `tx.origin`, `selfdestruct`, `delegatecall` to input, zero-address mint, integer division (28 rules) |
 | 2 | solc | syntax + type errors |
 | 3 | SMTChecker | overflow / underflow / division-by-zero / assertion violations (Z3-backed proofs) |
 | 4 | Mythril | symbolic execution — opt-in via `--deep` |
@@ -153,7 +153,7 @@ Every `scriipture verify` runs in order. Any gate fails → deploy is blocked.
 
 Same command, same flow, whichever network you target.
 
-`base` · `base-sepolia` · `mainnet` · `sepolia` · `anvil`
+`base` · `base-sepolia` · `mainnet` · `sepolia` · `optimism` · `optimism-sepolia` · `arbitrum` · `arbitrum-sepolia` · `polygon` · `polygon-amoy` · `anvil`
 
 ```bash
 scriipture deploy MyToken -n base                # Base mainnet
@@ -161,7 +161,7 @@ scriipture deploy MyToken -n base-sepolia        # Base testnet
 scriipture deploy MyToken -n anvil               # local
 ```
 
-Deployed contracts auto-verify on the matching Etherscan-family explorer when an API key is configured. More EVM networks are on the roadmap — anything outside the list above currently exits with `Unknown network`.
+Deployed contracts auto-verify on the matching Etherscan-family explorer when an API key is configured. Any other EVM chain can be added in `scriipture.config.mjs` with just an `rpcUrl` and `chainId`.
 
 ---
 
@@ -217,13 +217,13 @@ console.log(solidity);
 npm install scriipture
 ```
 
-`Get started` → `/docs` · `Star on GitHub` → `https://github.com/Worldstreet-Web-Services/scripture` · `Read the docs` → `/docs/details`
+`Get started` → `/docs` · `Star on GitHub` → `https://github.com/Konstellation-Network/Scriipture` · `Read the docs` → `/docs/details`
 
 ---
 
 ## Footer
 
-- **GitHub** — github.com/Worldstreet-Web-Services/scripture
+- **GitHub** — github.com/Konstellation-Network/Scriipture
 - **npm** — npmjs.com/package/scriipture
 - **Docs** — full reference in [docs/details.md](./docs/details.md)
 - **License** — MIT

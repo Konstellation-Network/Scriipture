@@ -13,7 +13,7 @@ We want Scriipture to be a productive, focused, professional space for shipping 
 
 ## Enforcement
 
-Reports of unacceptable behavior can be sent privately to the maintainers by opening a [private security advisory](https://github.com/Worldstreet-Web-Services/scripture/security/advisories/new), which is visible only to repository maintainers.
+Reports of unacceptable behavior can be sent privately to the maintainers by opening a [private security advisory](https://github.com/Konstellation-Network/Scriipture/security/advisories/new), which is visible only to repository maintainers.
 
 Project maintainers will review, respond within 7 days, and take action consistent with the Contributor Covenant enforcement guidelines — anything from a private warning to a temporary or permanent ban from project spaces.
 
